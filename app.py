@@ -154,17 +154,37 @@ def extract_showings(block):
 
     return out
 
+
+def extract_runtime_minutes(text):
+    """作品ブロックから上映時間（例: 128分）を取得する。"""
+    candidates = [int(x) for x in re.findall(r"(?<!\d)(\d{2,3})\s*分", text)]
+    for n in candidates:
+        if 40 <= n <= 300:
+            return n
+    return None
+
+def add_minutes_to_time(start, runtime):
+    if not start or not runtime:
+        return None
+    h, m = map(int, start.split(":"))
+    total = h * 60 + m + runtime
+    return f"{total // 60:02d}:{total % 60:02d}"
+
 def scrape_theater(key, date):
     html = fetch(THEATERS[key]["url"])
     result = []
 
     for title, text in movie_sections(html):
         block = extract_date_block(text, date)
+        runtime = extract_runtime_minutes(text)
         for showing in extract_showings(block):
+            end = showing["end"] or add_minutes_to_time(showing["start"], runtime)
             result.append({
                 "title": title,
                 "start": showing["start"],
-                "end": showing["end"],
+                "end": end,
+                "runtime": runtime,
+                "end_source": "published" if showing["end"] else ("runtime" if runtime else None),
                 "status": None,
             })
 
@@ -191,7 +211,7 @@ def api_schedule():
         "aeon": [],
         "warnings": [],
         "source": "映画.com",
-        "version": "v7-ui",
+        "version": "v8-bright-endtimes",
     }
 
     for key in ("toho", "aeon"):
@@ -236,7 +256,7 @@ def home():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "v7-ui"}
+    return {"ok": True, "version": "v8-bright-endtimes"}
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)

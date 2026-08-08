@@ -19,8 +19,8 @@ h1{font-size:25px;margin:0 0 4px}.sub{font-size:12px;color:var(--muted);margin-b
 .cell{min-height:48px;padding:8px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
 .head{font-weight:800;min-height:auto;position:sticky;top:0;z-index:5}.th1{background:#482025}.th2{background:#322053}
 .hour{color:var(--muted);font-size:12px;text-align:center}
-.show{border-radius:10px;padding:7px 8px;margin:3px 0;font-size:12px;line-height:1.35;border-left:4px solid transparent;transition:.15s}
-.show.finished{opacity:.38;filter:saturate(.55)}
+.show{border-radius:10px;padding:7px 8px;margin:3px 0;font-size:12px;line-height:1.35;border-left:5px solid transparent;transition:.15s;box-shadow:inset 0 0 0 1px #ffffff18}
+.show.finished{opacity:.32;filter:saturate(.40) brightness(.72)}
 .time{font-weight:900;font-size:14px;letter-spacing:.1px}
 .titlebtn{display:block;width:100%;margin-top:3px;padding:0;border:0;background:none;color:inherit;text-align:left;font:inherit;font-weight:700;cursor:pointer}
 .titlebtn:hover{text-decoration:underline}
@@ -40,7 +40,7 @@ dialog::backdrop{background:#0009}.modal{padding:20px}.modal h2{font-size:20px;m
 <div id="tabs" class="tabs"></div>
 <div class="controls"><span>時間から見る</span><span id="updated"></span></div>
 <div id="gridwrap" class="gridwrap"><div id="grid" class="grid"></div></div>
-<div id="notice" class="notice">終了時刻は取得元に掲載されている場合に表示します。今日の終了済み上映は薄く表示します。</div>
+<div id="notice" class="notice">終了時刻は、掲載値を優先し、無い回は作品の上映時間から補完しています。今日の終了済み上映は薄く表示します。</div>
 </main>
 
 <dialog id="detail">
@@ -64,7 +64,8 @@ function esc(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&l
 function seatClass(s){return s==="◎"?"ok":s==="○"?"some":s==="△"?"few":"none"}
 function hashColor(title){
  let h=0; for(let i=0;i<title.length;i++) h=(h*31+title.charCodeAt(i))>>>0;
- const hue=h%360; return {bg:`hsl(${hue} 38% 22%)`, border:`hsl(${hue} 72% 58%)`};
+ const hue=h%360;
+ return {bg:`hsl(${hue} 55% 34%)`, border:`hsl(${hue} 88% 68%)`};
 }
 function minutes(t){if(!t)return null;const [h,m]=t.split(":").map(Number);return h*60+m}
 function isFinished(x,date){
@@ -78,7 +79,7 @@ function openDetail(x,date){
  document.getElementById("detailTitle").textContent=x.title;
  document.getElementById("detailTime").textContent=x.end ? `${x.start} → ${x.end}` : `${x.start} 開始`;
  document.getElementById("detailTheater").textContent=x.theater==="toho" ? "TOHOシネマズ 八千代緑が丘" : "イオンシネマ幕張新都心";
- document.getElementById("detailDate").textContent=date;
+ document.getElementById("detailDate").textContent=date + (x.runtime ? ` ・ 上映時間 ${x.runtime}分` : "");
  detail.showModal();
 }
 document.getElementById("closeDetail").onclick=()=>detail.close();
