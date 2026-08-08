@@ -125,26 +125,33 @@ def extract_date_block(text, date):
 
     return rest
 
-def extract_start_times(block):
+def extract_showings(block):
     if not block:
         return []
 
-    # 「20:40～23:00」の終了時刻を除去し、開始時刻だけ残す
-    cleaned = re.sub(
-        r"([0-2]?\d:\d{2})\s*[～〜~-]\s*([0-2]?\d:\d{2})",
-        r"\1",
-        block
+    # 映画.comの表記例:
+    #   9:10 12:10 15:00 17:50 20:40 ～23:00
+    # 通常は各回の開始時刻のみ。終了時刻が明記される回は「～終了時刻」を保持する。
+    token_re = re.compile(
+        r"(?<!\d)([0-2]?\d:\d{2})(?:\s*[～〜~-]\s*([0-2]?\d:\d{2}))?(?!\d)"
     )
 
-    times = re.findall(r"(?<!\d)([0-2]?\d:\d{2})(?!\d)", cleaned)
     out = []
+    for m in token_re.finditer(block):
+        sh, sm = map(int, m.group(1).split(":"))
+        if not (0 <= sh <= 29 and 0 <= sm <= 59):
+            continue
 
-    for t in times:
-        h, m = map(int, t.split(":"))
-        if 0 <= h <= 29 and 0 <= m <= 59:
-            value = f"{h:02d}:{m:02d}"
-            if value not in out:
-                out.append(value)
+        start = f"{sh:02d}:{sm:02d}"
+        end = None
+
+        if m.group(2):
+            eh, em = map(int, m.group(2).split(":"))
+            if 0 <= eh <= 29 and 0 <= em <= 59:
+                end = f"{eh:02d}:{em:02d}"
+
+        out.append({"start": start, "end": end})
+
     return out
 
 def scrape_theater(key, date):
@@ -153,11 +160,11 @@ def scrape_theater(key, date):
 
     for title, text in movie_sections(html):
         block = extract_date_block(text, date)
-        for start in extract_start_times(block):
+        for showing in extract_showings(block):
             result.append({
                 "title": title,
-                "start": start,
-                "end": None,
+                "start": showing["start"],
+                "end": showing["end"],
                 "status": None,
             })
 
@@ -184,7 +191,7 @@ def api_schedule():
         "aeon": [],
         "warnings": [],
         "source": "映画.com",
-        "version": "v6-parser",
+        "version": "v7-ui",
     }
 
     for key in ("toho", "aeon"):
@@ -229,7 +236,7 @@ def home():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "v6-parser"}
+    return {"ok": True, "version": "v7-ui"}
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
