@@ -4,79 +4,184 @@ import requests, re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-app=Flask(__name__, static_folder="static")
-UA={"User-Agent":"Mozilla/5.0 (compatible; personal-movie-checker/1.0)"}
-TIMEOUT=20
+app = Flask(__name__, static_folder="static")
 
-def clean_lines(html):
-    soup=BeautifulSoup(html,"html.parser")
-    return [re.sub(r"\s+"," ",x).strip() for x in soup.get_text("\n").splitlines() if x.strip()]
+UA = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0 Safari/537.36"
+    )
+}
+TIMEOUT = 20
+
+THEATERS = {
+    "toho": {
+        "name": "TOHOシネマズ 八千代緑が丘",
+        "url": "https://eiga.com/theater/12/120106/3153/",
+    },
+    "aeon": {
+        "name": "イオンシネマ幕張新都心",
+        "url": "https://eiga.com/theater/12/120102/3257/",
+    },
+}
+
+SKIP_TITLES = {
+    "上映スケジュール",
+    "映画館情報・割引情報",
+    "近くの映画館",
+    "近くのエリア",
+    "都道府県別",
+    "劇場情報",
+}
 
 def fetch(url):
-    r=requests.get(url,headers=UA,timeout=TIMEOUT)
+    r = requests.get(url, headers=UA, timeout=TIMEOUT)
     r.raise_for_status()
+    r.encoding = r.apparent_encoding or "utf-8"
     return r.text
 
-def parse_generic(lines):
+def normalize(s):
+    return re.sub(r"\s+", " ", s).strip()
+
+def get_movie_sections(html):
     """
-    Conservative fallback parser.
-    Finds time pairs near a preceding text line that looks like a movie title.
-    This is intentionally easy to adjust if a cinema changes its HTML.
+   映画.com の劇場ページから、
+    h2見出しを映画タイトル候補として、次のh2までの本文を切り出す。
     """
-    out=[]
-    skip=re.compile(r"(上映スケジュール|上映時間|スクリーン|チケット|販売|劇場|料金|会員|ログイン|メニュー|お知らせ)")
-    title=None
-    for line in lines:
-        tm=re.search(r"(?<!\d)([0-2]?\d:\d{2})\s*[~〜\-]\s*([0-2]?\d:\d{2})(?!\d)",line)
-        if tm and title:
-            out.append({"title":title,"start":tm.group(1).zfill(5),"end":tm.group(2).zfill(5),"status":None})
+    soup = BeautifulSoup(html, "html.parser")
+
+    # script/styleを除去
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+
+    body_text = soup.get_text("\n", strip=True)
+    body_text = body_text.replace("\xa0", " ")
+
+    headings = []
+    for h in soup.find_all("h2"):
+        title = normalize(h.get_text(" ", strip=True))
+        if not title or title in SKIP_TITLES:
             continue
-        single=re.fullmatch(r"([0-2]?\d:\d{2})",line)
-        if single and title:
-            out.append({"title":title,"start":single.group(1).zfill(5),"end":None,"status":None})
+        if "上映" in title and "作品" not in title:
             continue
-        if len(line)<=90 and not skip.search(line) and not re.fullmatch(r"[\d:〜~\-（）()年月日/・ ]+",line):
-            title=line
-    # de-duplicate
-    seen=set(); dedup=[]
-    for x in out:
-        k=(x["title"],x["start"],x["end"])
+        pos = body_text.find(title)
+        if pos >= 0:
+            headings.append((pos, title))
+
+    headings = sorted(set(headings))
+    sections = []
+    for i, (pos, title) in enumerate(headings):
+        end = headings[i + 1][0] if i + 1 < len(headings) else len(body_text)
+        chunk = body_text[pos:end]
+
+        # 実際に上映日らしき文字列があるものだけ映画として扱う
+        if re.search(r"\d{1,2}/\d{1,2}[（(][月火水木金土日][）)]", chunk):
+            sections.append((title, chunk))
+    return sections
+
+def extract_for_date(chunk, date):
+    """
+    例:
+      8/8（土） 9:20 11:45 14:10 16:25 18:40 20:50～22:35 |
+    から対象日の開始時刻を抽出。
+    """
+    dt = datetime.strptime(date, "%Y-%m-%d")
+    md = f"{dt.month}/{dt.day}"
+
+    # 曜日表記を含む日付から、次の日付 or 区切りまでを取得
+    pat = re.compile(
+        rf"{re.escape(md)}[（(][月火水木金土日][）)]\s*(.*?)(?="
+        r"\s*\|\s*\d{1,2}/\d{1,2}[（(][月火水木金土日][）)]"
+        r"|\s*\d{1,2}/\d{1,2}[（(][月火水木金土日][）)]"
+        r"|$)"
+    )
+    m = pat.search(chunk)
+    if not m:
+        return []
+
+    block = m.group(1)
+
+    # 開始時刻。20:50～22:35 は 20:50 を開始として扱う。
+    times = re.findall(r"(?<!\d)([0-2]?\d:\d{2})(?!\d)", block)
+
+    # 終了時刻を重複して拾うのを避ける
+    # 「A～B」のBを除く
+    ends = set(re.findall(r"[～〜~-]\s*([0-2]?\d:\d{2})", block))
+    starts = []
+    for t in times:
+        t = t.zfill(5)
+        if t in ends:
+            continue
+        if t not in starts:
+            starts.append(t)
+    return starts
+
+def scrape_theater(key, date):
+    meta = THEATERS[key]
+    html = fetch(meta["url"])
+    result = []
+
+    for title, chunk in get_movie_sections(html):
+        starts = extract_for_date(chunk, date)
+        for start in starts:
+            result.append({
+                "title": title,
+                "start": start,
+                "end": None,
+                "status": None,
+            })
+
+    # 同一作品・同一時刻の重複除去
+    seen = set()
+    dedup = []
+    for x in result:
+        k = (x["title"], x["start"])
         if k not in seen:
-            seen.add(k); dedup.append(x)
-    return dedup
+            seen.add(k)
+            dedup.append(x)
 
-def toho(date):
-    # TOHO Cinemas Yachiyo Midorigaoka, theater code 028
-    url="https://hlo.tohotheater.jp/net/schedule/028/TNPI2000J01.do?frm=mw"
-    # Main schedule page generally carries the currently published week.
-    lines=clean_lines(fetch(url))
-    return parse_generic(lines)
-
-def aeon(date):
-    compact=date.replace("-","")
-    url=f"https://theater.aeoncinema.com/theaters/makuhari/?date={compact}"
-    lines=clean_lines(fetch(url))
-    return parse_generic(lines)
+    return sorted(dedup, key=lambda x: (x["start"], x["title"]))
 
 @app.get("/api/schedule")
 def api_schedule():
-    date=request.args.get("date") or datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d")
-    result={"date":date,"toho":[],"aeon":[],"warnings":[]}
-    for name,fn in (("toho",toho),("aeon",aeon)):
+    date = request.args.get("date") or datetime.now(
+        ZoneInfo("Asia/Tokyo")
+    ).strftime("%Y-%m-%d")
+
+    result = {
+        "date": date,
+        "toho": [],
+        "aeon": [],
+        "warnings": [],
+        "source": "映画.com",
+    }
+
+    for key in ("toho", "aeon"):
         try:
-            result[name]=fn(date)
+            result[key] = scrape_theater(key, date)
+            if not result[key]:
+                result["warnings"].append(
+                    f"{key}: この日の上映情報を取得できませんでした"
+                )
         except Exception as e:
-            result["warnings"].append(f"{name}: {type(e).__name__}")
-    result["updated_at"]=datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%H:%M")
+            result["warnings"].append(
+                f"{key}: {type(e).__name__}: {str(e)[:120]}"
+            )
+
+    result["updated_at"] = datetime.now(
+        ZoneInfo("Asia/Tokyo")
+    ).strftime("%H:%M")
+
     return jsonify(result)
 
 @app.get("/")
 def home():
-    return send_from_directory("static","index.html")
+    return send_from_directory("static", "index.html")
 
 @app.get("/health")
 def health():
-    return {"ok":True}
+    return {"ok": True}
 
-if __name__=="__main__":
-    app.run(host="0.0.0.0",port=8000)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000)
