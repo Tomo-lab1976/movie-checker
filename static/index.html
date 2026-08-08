@@ -24,7 +24,7 @@ h1{font-size:25px;margin:0 0 4px}.sub{font-size:12px;color:var(--muted);margin-b
 .time{font-weight:900;font-size:14px;letter-spacing:.1px}
 .titlebtn{display:block;width:100%;margin-top:3px;padding:0;border:0;background:none;color:inherit;text-align:left;font:inherit;font-weight:700;cursor:pointer}
 .titlebtn:hover{text-decoration:underline}
-.seat{float:right;font-weight:900}.ok{color:#64d98b}.some{color:#75b8ff}.few{color:#ffb45c}.none{color:#aaa}
+.seat{float:right;font-weight:900;font-size:12px}.ok{color:#7df2a5}.some{color:#85c4ff}.few{color:#ffc066}.soldout{color:#ff8d91}.none{color:#aaa}
 .now-marker{position:absolute;left:0;right:0;height:0;border-top:2px solid var(--red);z-index:4;pointer-events:none}
 .now-marker span{position:absolute;left:2px;top:-19px;background:var(--red);color:#fff;font-size:10px;font-weight:900;padding:2px 5px;border-radius:5px;box-shadow:0 1px 4px #0008}
 .notice{padding:8px 10px;border-radius:10px;background:#201f24;color:#c4cad3;font-size:11px;line-height:1.45;margin-top:8px;flex:0 0 auto}
@@ -43,15 +43,15 @@ dialog::backdrop{background:#0009}.modal{padding:20px}.modal h2{font-size:20px;m
   <span><button id="nowBtn" class="nowbtn" type="button">現在時刻へ</button> <span id="updated"></span></span>
 </div>
 <div id="gridwrap" class="gridwrap"><div id="grid" class="grid"></div></div>
-<div id="notice" class="notice">今日を開くと現在時刻付近へ自動移動します。開始時刻を過ぎた上映は薄く表示します。終了時刻は掲載値を優先し、無い回は上映時間から補完しています。</div>
-<div style="display:none" id="buildVersion">v12-seat-data-diagnostic</div></main>
+<div id="notice" class="notice">TOHOは公式の空席状況（◎○△×）を表示します。開始時刻を過ぎた上映は薄く表示します。イオンの空席表示は調査中です。</div>
+<div style="display:none" id="buildVersion">v13-toho-seats</div></main>
 
 <dialog id="detail">
  <div class="modal">
    <h2 id="detailTitle"></h2>
    <div class="detailrow detailtime" id="detailTime"></div>
    <div class="detailrow" id="detailTheater"></div>
-   <div class="detailrow" id="detailDate"></div>
+   <div class="detailrow" id="detailDate"></div><div class="detailrow" id="detailSeat"></div>
    <button class="close" id="closeDetail">閉じる</button>
  </div>
 </dialog>
@@ -64,7 +64,7 @@ const ymd=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${Str
 function label(d,i){if(i===0)return"今日";if(i===1)return"明日";return `${d.getMonth()+1}/${d.getDate()}(${["日","月","火","水","木","金","土"][d.getDay()]})`}
 dates.forEach((d,i)=>{let b=document.createElement("button");b.className="tab";b.dataset.date=ymd(d);b.textContent=label(d,i);b.onclick=()=>load(b.dataset.date);tabs.appendChild(b)});
 function esc(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]))}
-function seatClass(s){return s==="◎"?"ok":s==="○"?"some":s==="△"?"few":"none"}
+function seatClass(s){return s==="◎"?"ok":s==="○"?"some":s==="△"?"few":s==="×"?"soldout":"none"}
 function hashColor(title){
  let h=0; for(let i=0;i<title.length;i++) h=(h*31+title.charCodeAt(i))>>>0;
  const hue=h%360;
@@ -83,6 +83,11 @@ function openDetail(x,date){
  document.getElementById("detailTime").textContent=x.end ? `${x.start} → ${x.end}` : `${x.start} 開始`;
  document.getElementById("detailTheater").textContent=x.theater==="toho" ? "TOHOシネマズ 八千代緑が丘" : "イオンシネマ幕張新都心";
  document.getElementById("detailDate").textContent=date + (x.runtime ? ` ・ 上映時間 ${x.runtime}分` : "");
+ const extra=[];
+ if(x.status) extra.push(`空席 ${x.status}${x.status_text?` ${x.status_text}`:""}`);
+ if(x.screen) extra.push(x.screen);
+ if(x.seat_count) extra.push(`${x.seat_count}席`);
+ document.getElementById("detailSeat").textContent=extra.join(" ・ ");
  detail.showModal();
 }
 document.getElementById("closeDetail").onclick=()=>detail.close();
@@ -109,7 +114,7 @@ function render(data){
    for(const th of ["toho","aeon"]){
      html+='<div class="cell">';
      for(const x of all.filter(v=>v.theater===th && v.start.startsWith(h))){
-       const seat=x.status?`<span class="seat ${seatClass(x.status)}">${esc(x.status)}</span>`:"";
+       const seat=x.status?`<span class="seat ${seatClass(x.status)}">${esc(x.status)}${x.status_text?` ${esc(x.status_text)}`:""}</span>`:"";
        const c=hashColor(x.title);
        const finished=isFinished(x,data.date)?" finished":"";
        const payload=encodeURIComponent(JSON.stringify({...x,theater:th}));

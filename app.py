@@ -298,7 +298,7 @@ def _seat_source_diagnostic(url):
 @app.get("/seat_debug")
 def seat_debug():
     result = {
-        "version": "v12-seat-data-diagnostic",
+        "version": "v13-toho-seats",
         "toho": [],
         "aeon": [],
     }
@@ -321,7 +321,7 @@ def seat_debug_one(key):
         return jsonify({"error": "key must be toho or aeon"}), 400
 
     result = {
-        "version": "v12-seat-data-diagnostic",
+        "version": "v13-toho-seats",
         "theater": key,
         "sources": [],
     }
@@ -467,7 +467,7 @@ def seat_debug2_one(key):
         return jsonify({"error": "key must be toho or aeon"}), 400
 
     result = {
-        "version": "v12-seat-data-diagnostic",
+        "version": "v13-toho-seats",
         "theater": key,
         "sources": [],
     }
@@ -618,7 +618,7 @@ def seat_data_debug_toho():
     ]
 
     return jsonify({
-        "version": "v12-seat-data-diagnostic",
+        "version": "v13-toho-seats",
         "theater": "toho",
         "date": date,
         "results": [
@@ -654,13 +654,212 @@ def seat_data_debug_aeon():
     ]
 
     return jsonify({
-        "version": "v12-seat-data-diagnostic",
+        "version": "v13-toho-seats",
         "theater": "aeon",
         "date": date_compact,
         "results": [
             _summarize_response(url)
             for url in urls
         ]
+    })
+
+
+
+TOHO_STATUS_MAP = {
+    "A": ("◎", "余裕あり"),
+    "B": ("○", "空席あり"),
+    "C": ("△", "残りわずか"),
+    "D": ("×", "満席"),
+    # G は販売期間外・販売対象外など。混雑表示としては出さない。
+    "G": (None, "販売対象外"),
+}
+
+def _toho_time(t):
+    if not t:
+        return None
+    try:
+        h, m = map(int, str(t).split(":")[:2])
+        return f"{h:02d}:{m:02d}"
+    except Exception:
+        return str(t)
+
+def fetch_toho_seat_entries(date):
+    compact = datetime.strptime(date, "%Y-%m-%d").strftime("%Y%m%d")
+    url = "https://api2.tohotheater.jp/api/schedule/v2/schedule/028/TNPI3050J05"
+    params = {
+        "__type__": "json",
+        "vg_cd": "028",
+        "show_day": compact,
+        "isMember": "false",
+        "enter_kbn": "0",
+        "_dc": str(int(time.time() * 1000)),
+    }
+
+    r = requests.get(url, params=params, headers=UA, timeout=TIMEOUT)
+    r.raise_for_status()
+    data = r.json()
+
+    entries = []
+
+    def walk(obj):
+        if isinstance(obj, dict):
+            if obj.get("showingStart") and isinstance(obj.get("unsoldSeatInfo"), dict):
+                seat = obj.get("unsoldSeatInfo") or {}
+                screen = obj.get("screen") or {}
+                code = seat.get("unsoldSeatStatus")
+                symbol, label = TOHO_STATUS_MAP.get(code, (None, None))
+                entries.append({
+                    "start": _toho_time(obj.get("showingStart")),
+                    "end": _toho_time(obj.get("showingEnd")),
+                    "status": symbol,
+                    "status_text": label,
+                    "status_code": code,
+                    "screen": screen.get("name"),
+                    "seat_count": screen.get("allSeatNum"),
+                })
+            for v in obj.values():
+                walk(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                walk(v)
+
+    walk(data)
+    return entries
+
+def merge_toho_seat_status(showings, date):
+    """
+    映画.comで取得した表示用上映情報に、TOHO公式APIの空席状況を重ねる。
+    タイトルの表記差を避けるため、開始時刻＋終了時刻で照合する。
+    """
+    entries = fetch_toho_seat_entries(date)
+
+    by_start = {}
+    for e in entries:
+        by_start.setdefault(e["start"], []).append(e)
+
+    matched = 0
+    for x in showings:
+        candidates = by_start.get(x.get("start"), [])
+        if not candidates:
+            continue
+
+        chosen = None
+
+        # まず開始＋終了の完全一致
+        if x.get("end"):
+            exact = [e for e in candidates if e.get("end") == x.get("end")]
+            if len(exact) == 1:
+                chosen = exact[0]
+
+        # 同じ開始時刻が1件だけなら確定
+        if chosen is None and len(candidates) == 1:
+            chosen = candidates[0]
+
+        # 終了時刻が多少ずれていても最も近いものが一意なら採用
+        if chosen is None and x.get("end"):
+            def mins(t):
+                try:
+                    h, m = map(int, t.split(":"))
+                    return h * 60 + m
+                except Exception:
+                    return None
+            target = mins(x["end"])
+            ranked = []
+            if target is not None:
+                for e in candidates:
+                    em = mins(e.get("end") or "")
+                    if em is not None:
+                        ranked.append((abs(em-target), e))
+                ranked.sort(key=lambda z: z[0])
+                if ranked and (len(ranked) == 1 or ranked[0][0] < ranked[1][0]):
+                    chosen = ranked[0][1]
+
+        if chosen is None:
+            continue
+
+        x["status"] = chosen.get("status")
+        x["status_text"] = chosen.get("status_text")
+        x["status_code"] = chosen.get("status_code")
+        x["screen"] = chosen.get("screen")
+        x["seat_count"] = chosen.get("seat_count")
+
+        # 終了時刻はTOHO公式の値を優先
+        if chosen.get("end"):
+            x["end"] = chosen["end"]
+
+        matched += 1
+
+    return {
+        "matched": matched,
+        "official_entries": len(entries),
+    }
+
+
+def _aeon_bundle_url():
+    r = requests.get(
+        "https://theater.aeoncinema.com/theaters/makuhari/",
+        headers=UA, timeout=TIMEOUT, allow_redirects=True
+    )
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
+    for s in soup.find_all("script", src=True):
+        src = s.get("src")
+        if src and "theaters_makuhari" in src and "bundle.js" in src:
+            from urllib.parse import urljoin
+            return urljoin(r.url, src)
+    return None
+
+@app.get("/aeon_path_debug")
+def aeon_path_debug():
+    bundle_url = _aeon_bundle_url()
+    if not bundle_url:
+        return jsonify({
+            "version": "v13-toho-seats",
+            "error": "幕張新都心のbundle.jsを見つけられませんでした"
+        }), 500
+
+    r = requests.get(bundle_url, headers=UA, timeout=TIMEOUT)
+    r.raise_for_status()
+    text = r.text
+
+    needles = [
+        "schedule/v2/data/",
+        "schedule/data/__aeon/",
+        "remainingAttendeeCapacity",
+        "maximumAttendeeCapacity",
+        "remainingseats",
+    ]
+
+    excerpts = {}
+    for needle in needles:
+        hits = []
+        start = 0
+        low = text.lower()
+        nl = needle.lower()
+        while len(hits) < 12:
+            pos = low.find(nl, start)
+            if pos < 0:
+                break
+            hits.append(text[max(0, pos-900):min(len(text), pos+len(needle)+1400)])
+            start = pos + len(needle)
+        excerpts[needle] = hits
+
+    # スケジュール関連の文字列リテラルも抽出
+    literal_re = re.compile(r'["\']([^"\']*schedule[^"\']*)["\']', re.I)
+    literals = []
+    for m in literal_re.finditer(text):
+        val = m.group(1)
+        if val not in literals:
+            literals.append(val)
+        if len(literals) >= 150:
+            break
+
+    return jsonify({
+        "version": "v13-toho-seats",
+        "bundle_url": bundle_url,
+        "bundle_bytes": len(r.content),
+        "excerpts": excerpts,
+        "schedule_literals": literals,
     })
 
 
@@ -676,7 +875,7 @@ def api_schedule():
         "aeon": [],
         "warnings": [],
         "source": "映画.com",
-        "version": "v12-seat-data-diagnostic",
+        "version": "v13-toho-seats",
     }
 
     for key in ("toho", "aeon"):
@@ -690,6 +889,16 @@ def api_schedule():
             result["warnings"].append(
                 f"{key}: {type(e).__name__}: {str(e)[:160]}"
             )
+
+    # TOHOのみ、公式APIの空席状況を本番表示へ反映
+    result["seat_sources"] = {"toho": "TOHO公式API", "aeon": None}
+    try:
+        merge_info = merge_toho_seat_status(result["toho"], date)
+        result["toho_seat_merge"] = merge_info
+    except Exception as e:
+        result["warnings"].append(
+            f"toho seats: {type(e).__name__}: {str(e)[:180]}"
+        )
 
     result["updated_at"] = datetime.now(
         ZoneInfo("Asia/Tokyo")
@@ -721,7 +930,7 @@ def home():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "v12-seat-data-diagnostic", "seat_debug": "/seat_debug", "seat_debug2": "/seat_debug2/toho", "seat_data_debug": "/seat_data_debug/toho"}
+    return {"ok": True, "version": "v13-toho-seats", "seat_debug": "/seat_debug", "seat_debug2": "/seat_debug2/toho", "seat_data_debug": "/seat_data_debug/toho"}
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
