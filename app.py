@@ -298,7 +298,7 @@ def _seat_source_diagnostic(url):
 @app.get("/seat_debug")
 def seat_debug():
     result = {
-        "version": "v11-seat-endpoint-diagnostic",
+        "version": "v12-seat-data-diagnostic",
         "toho": [],
         "aeon": [],
     }
@@ -321,7 +321,7 @@ def seat_debug_one(key):
         return jsonify({"error": "key must be toho or aeon"}), 400
 
     result = {
-        "version": "v11-seat-endpoint-diagnostic",
+        "version": "v12-seat-data-diagnostic",
         "theater": key,
         "sources": [],
     }
@@ -467,7 +467,7 @@ def seat_debug2_one(key):
         return jsonify({"error": "key must be toho or aeon"}), 400
 
     result = {
-        "version": "v11-seat-endpoint-diagnostic",
+        "version": "v12-seat-data-diagnostic",
         "theater": key,
         "sources": [],
     }
@@ -484,6 +484,186 @@ def seat_debug2_one(key):
     return jsonify(result)
 
 
+
+import time
+
+def _summarize_response(url, params=None):
+    try:
+        r = requests.get(
+            url,
+            params=params,
+            headers=UA,
+            timeout=TIMEOUT,
+            allow_redirects=True,
+        )
+        content_type = r.headers.get("content-type", "")
+        text = r.text
+
+        info = {
+            "url": r.url,
+            "status_code": r.status_code,
+            "content_type": content_type,
+            "bytes": len(r.content),
+            "text_prefix": text[:700],
+        }
+
+        # JSONなら構造と残席関連語を探索
+        if "json" in content_type.lower() or text.lstrip().startswith(("{", "[")):
+            try:
+                data = r.json()
+                info["json_type"] = type(data).__name__
+
+                hits = []
+                def walk(obj, path="$", depth=0):
+                    if depth > 12 or len(hits) >= 100:
+                        return
+                    if isinstance(obj, dict):
+                        for k, v in obj.items():
+                            kl = str(k).lower()
+                            if any(word in kl for word in [
+                                "seat", "remain", "attendee", "capacity",
+                                "vacan", "status", "showingstart", "showingend",
+                                "movie", "screen"
+                            ]):
+                                hits.append({
+                                    "path": f"{path}.{k}",
+                                    "value": str(v)[:500]
+                                })
+                            walk(v, f"{path}.{k}", depth+1)
+                    elif isinstance(obj, list):
+                        for i, v in enumerate(obj[:100]):
+                            walk(v, f"{path}[{i}]", depth+1)
+
+                walk(data)
+                info["interesting_json_hits"] = hits[:100]
+
+                # 81070 / makuhari の出現箇所も探す
+                target_hits = []
+                def find_target(obj, path="$", depth=0):
+                    if depth > 12 or len(target_hits) >= 50:
+                        return
+                    if isinstance(obj, dict):
+                        for k, v in obj.items():
+                            s = str(v)
+                            if "81070" in s or "makuhari" in s.lower():
+                                target_hits.append({
+                                    "path": f"{path}.{k}",
+                                    "value": s[:700]
+                                })
+                            find_target(v, f"{path}.{k}", depth+1)
+                    elif isinstance(obj, list):
+                        for i, v in enumerate(obj[:300]):
+                            find_target(v, f"{path}[{i}]", depth+1)
+                    else:
+                        s = str(obj)
+                        if "81070" in s or "makuhari" in s.lower():
+                            target_hits.append({"path": path, "value": s[:700]})
+
+                find_target(data)
+                info["target_81070_makuhari_hits"] = target_hits[:50]
+            except Exception as e:
+                info["json_error"] = f"{type(e).__name__}: {str(e)[:200]}"
+
+        # HTMLでも残席語を探索
+        low = text.lower()
+        keywords = [
+            "unsoldseatstatus", "unsoldseatinfo",
+            "remainingattendeecapacity", "maximumattendeecapacity",
+            "remainingseats", "vacant", "soldout",
+            "showingstart", "showingend"
+        ]
+        info["keyword_counts"] = {k: low.count(k) for k in keywords}
+
+        return info
+    except Exception as e:
+        return {
+            "url": url,
+            "error": f"{type(e).__name__}: {str(e)[:300]}"
+        }
+
+@app.get("/seat_data_debug/toho")
+def seat_data_debug_toho():
+    date = request.args.get("date") or datetime.now(
+        ZoneInfo("Asia/Tokyo")
+    ).strftime("%Y%m%d")
+
+    now_ms = str(int(time.time() * 1000))
+    base_url = "https://api2.tohotheater.jp/api/schedule/v2/schedule/028/TNPI3050J05"
+
+    variants = [
+        {
+            "__type__": "html",
+            "vg_cd": "028",
+            "show_day": date,
+            "isMember": "false",
+            "enter_kbn": "0",
+            "_dc": now_ms,
+        },
+        {
+            "__type__": "html",
+            "vg_cd": "028",
+            "show_day": date,
+            "isMember": "false",
+            "enter_kbn": "",
+            "_dc": now_ms,
+        },
+        {
+            "__type__": "json",
+            "vg_cd": "028",
+            "show_day": date,
+            "isMember": "false",
+            "enter_kbn": "0",
+            "_dc": now_ms,
+        },
+    ]
+
+    return jsonify({
+        "version": "v12-seat-data-diagnostic",
+        "theater": "toho",
+        "date": date,
+        "results": [
+            _summarize_response(base_url, p)
+            for p in variants
+        ]
+    })
+
+@app.get("/seat_data_debug/aeon")
+def seat_data_debug_aeon():
+    date_compact = request.args.get("date") or datetime.now(
+        ZoneInfo("Asia/Tokyo")
+    ).strftime("%Y%m%d")
+
+    dt = datetime.strptime(date_compact, "%Y%m%d")
+    date_dash = dt.strftime("%Y-%m-%d")
+    stamp = str(int(time.time()))
+
+    base = "https://theater.aeoncinema.com"
+
+    # JSで見つかった公式データパスと、その命名規則として可能性の高い候補。
+    urls = [
+        f"{base}/schedule.json?v={stamp}",
+        f"{base}/schedule/data/theaters.json?v={stamp}",
+        f"{base}/schedule/v2/data/__master/movies.json?v={stamp}",
+        f"{base}/schedule/v2/data/81070.json?v={stamp}",
+        f"{base}/schedule/v2/data/81070/{date_compact}.json?v={stamp}",
+        f"{base}/schedule/v2/data/81070/{date_dash}.json?v={stamp}",
+        f"{base}/schedule/v2/data/makuhari.json?v={stamp}",
+        f"{base}/schedule/v2/data/makuhari/{date_compact}.json?v={stamp}",
+        f"{base}/schedule/data/__aeon/81070.json?v={stamp}",
+        f"{base}/schedule/data/__aeon/81070/{date_compact}.json?v={stamp}",
+    ]
+
+    return jsonify({
+        "version": "v12-seat-data-diagnostic",
+        "theater": "aeon",
+        "date": date_compact,
+        "results": [
+            _summarize_response(url)
+            for url in urls
+        ]
+    })
+
+
 @app.get("/api/schedule")
 def api_schedule():
     date = request.args.get("date") or datetime.now(
@@ -496,7 +676,7 @@ def api_schedule():
         "aeon": [],
         "warnings": [],
         "source": "映画.com",
-        "version": "v11-seat-endpoint-diagnostic",
+        "version": "v12-seat-data-diagnostic",
     }
 
     for key in ("toho", "aeon"):
@@ -541,7 +721,7 @@ def home():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "v11-seat-endpoint-diagnostic", "seat_debug": "/seat_debug", "seat_debug2": "/seat_debug2/toho"}
+    return {"ok": True, "version": "v12-seat-data-diagnostic", "seat_debug": "/seat_debug", "seat_debug2": "/seat_debug2/toho", "seat_data_debug": "/seat_data_debug/toho"}
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
