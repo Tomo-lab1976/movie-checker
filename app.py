@@ -298,7 +298,7 @@ def _seat_source_diagnostic(url):
 @app.get("/seat_debug")
 def seat_debug():
     result = {
-        "version": "v10-seat-diagnostic",
+        "version": "v11-seat-endpoint-diagnostic",
         "toho": [],
         "aeon": [],
     }
@@ -321,7 +321,7 @@ def seat_debug_one(key):
         return jsonify({"error": "key must be toho or aeon"}), 400
 
     result = {
-        "version": "v10-seat-diagnostic",
+        "version": "v11-seat-endpoint-diagnostic",
         "theater": key,
         "sources": [],
     }
@@ -333,6 +333,152 @@ def seat_debug_one(key):
             result["sources"].append({
                 "requested_url": url,
                 "error": f"{type(e).__name__}: {str(e)[:300]}",
+            })
+
+    return jsonify(result)
+
+
+
+from urllib.parse import urljoin
+
+def _endpoint_candidates(url):
+    r = requests.get(
+        url,
+        headers=UA,
+        timeout=TIMEOUT,
+        allow_redirects=True,
+    )
+    r.raise_for_status()
+    r.encoding = r.apparent_encoding or "utf-8"
+
+    html = r.text
+    soup = BeautifulSoup(html, "html.parser")
+
+    keywords = [
+        "schedule", "seat", "vacan", "avail", "remain", "stock",
+        "ticket", "vit", "reserve", "reservation", "ajax", "api",
+        "screening", "showtime", "performance", "purchase"
+    ]
+
+    script_srcs = []
+    for s in soup.find_all("script", src=True):
+        src = urljoin(r.url, s.get("src"))
+        if src not in script_srcs:
+            script_srcs.append(src)
+
+    inline_candidates = []
+    inline_snippets = []
+    url_re = re.compile(r'["\']((?:https?:)?//[^"\' ]+|/[A-Za-z0-9_./?=&%:-]+)["\']')
+
+    for s in soup.find_all("script"):
+        body = s.string or s.get_text(" ", strip=True) or ""
+        low = body.lower()
+
+        if any(k in low for k in keywords):
+            inline_snippets.append(norm(body)[:1600])
+
+        for m in url_re.finditer(body):
+            cand = m.group(1)
+            lowc = cand.lower()
+            if any(k in lowc for k in keywords):
+                full = urljoin(r.url, cand)
+                if full not in inline_candidates:
+                    inline_candidates.append(full)
+
+    html_candidates = []
+    attr_snippets = []
+    for tag in soup.find_all(True):
+        attrs = tag.attrs or {}
+        for k, v in attrs.items():
+            vals = v if isinstance(v, list) else [v]
+            for val in vals:
+                sval = str(val)
+                low = sval.lower()
+                if any(key in low for key in keywords):
+                    attr_snippets.append({
+                        "tag": tag.name,
+                        "attr": k,
+                        "value": sval[:500],
+                        "text": norm(tag.get_text(" ", strip=True))[:220],
+                    })
+                    if sval.startswith("/") or sval.startswith("http"):
+                        full = urljoin(r.url, sval)
+                        if full not in html_candidates:
+                            html_candidates.append(full)
+        if len(attr_snippets) >= 80:
+            break
+
+    js_findings = []
+    for src in script_srcs[:30]:
+        try:
+            jr = requests.get(src, headers=UA, timeout=TIMEOUT)
+            if jr.status_code != 200:
+                continue
+            body = jr.text
+            low = body.lower()
+            if not any(k in low for k in keywords):
+                continue
+
+            urls = []
+            for m in url_re.finditer(body):
+                cand = m.group(1)
+                if any(k in cand.lower() for k in keywords):
+                    full = urljoin(src, cand)
+                    if full not in urls:
+                        urls.append(full)
+                if len(urls) >= 30:
+                    break
+
+            snippets = []
+            for key in keywords:
+                pos = low.find(key)
+                if pos >= 0:
+                    snippets.append(body[max(0, pos-300):pos+900])
+                if len(snippets) >= 8:
+                    break
+
+            js_findings.append({
+                "src": src,
+                "bytes": len(body.encode("utf-8", errors="ignore")),
+                "candidate_urls": urls,
+                "snippets": snippets,
+            })
+        except Exception as e:
+            js_findings.append({
+                "src": src,
+                "error": f"{type(e).__name__}: {str(e)[:200]}",
+            })
+
+    return {
+        "requested_url": url,
+        "final_url": r.url,
+        "status_code": r.status_code,
+        "script_srcs": script_srcs,
+        "inline_url_candidates": inline_candidates,
+        "html_url_candidates": html_candidates,
+        "attribute_snippets": attr_snippets,
+        "inline_script_snippets": inline_snippets[:20],
+        "js_findings": js_findings[:20],
+    }
+
+@app.get("/seat_debug2/<key>")
+def seat_debug2_one(key):
+    if key not in OFFICIAL_SEAT_SOURCES:
+        return jsonify({"error": "key must be toho or aeon"}), 400
+
+    result = {
+        "version": "v11-seat-endpoint-diagnostic",
+        "theater": key,
+        "sources": [],
+    }
+
+    for url in OFFICIAL_SEAT_SOURCES[key]["urls"]:
+        try:
+            result["sources"].append(_endpoint_candidates(url))
+        except Exception as e:
+            result["sources"].append({
+                "requested_url": url,
+                "error": f"{type(e).__name__}: {str(e)[:400]}",
             })
 
     return jsonify(result)
@@ -350,7 +496,7 @@ def api_schedule():
         "aeon": [],
         "warnings": [],
         "source": "映画.com",
-        "version": "v10-seat-diagnostic",
+        "version": "v11-seat-endpoint-diagnostic",
     }
 
     for key in ("toho", "aeon"):
@@ -395,7 +541,7 @@ def home():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "v10-seat-diagnostic", "seat_debug": "/seat_debug"}
+    return {"ok": True, "version": "v11-seat-endpoint-diagnostic", "seat_debug": "/seat_debug", "seat_debug2": "/seat_debug2/toho"}
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
