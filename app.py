@@ -199,6 +199,145 @@ def scrape_theater(key, date):
 
     return sorted(out, key=lambda x: (x["start"], x["title"]))
 
+
+OFFICIAL_SEAT_SOURCES = {
+    "toho": {
+        "name": "TOHOシネマズ 八千代緑が丘",
+        "urls": [
+            "https://hlo.tohotheater.jp/net/schedule/028/TNPI2000J01.do?frm=mw",
+            "https://hlo.tohotheater.jp/net/schedule/028/TNPI2160J01.do?site_cd=028",
+        ],
+    },
+    "aeon": {
+        "name": "イオンシネマ幕張新都心",
+        "urls": [
+            "https://theater.aeoncinema.com/theaters/makuhari/",
+        ],
+    },
+}
+
+def _seat_source_diagnostic(url):
+    r = requests.get(
+        url,
+        headers=UA,
+        timeout=TIMEOUT,
+        allow_redirects=True,
+    )
+    r.raise_for_status()
+    r.encoding = r.apparent_encoding or "utf-8"
+
+    html = r.text
+    soup = BeautifulSoup(html, "html.parser")
+    text = norm(soup.get_text(" ", strip=True))
+
+    seat_words = [
+        "余裕あり",
+        "残席あり",
+        "残りわずか",
+        "残席わずか",
+        "残席なし",
+        "完売",
+        "空席あり",
+        "販売終了",
+        "販売期間外",
+        "◎",
+        "○",
+        "△",
+        "×",
+    ]
+
+    time_matches = re.findall(
+        r"(?<!\d)([0-2]?\d:\d{2})(?!\d)",
+        text
+    )
+
+    # 空席に関係しそうな語の前後を少量だけ返す
+    snippets = {}
+    lower_text = text.lower()
+    for word in seat_words:
+        pos = lower_text.find(word.lower())
+        if pos >= 0:
+            snippets[word] = text[max(0, pos-180):pos+len(word)+260]
+
+    # HTML上の class / aria-label / title に seat / vacant / availability らしき語があるか
+    attr_hits = []
+    patterns = ("seat", "vacan", "avail", "remain", "stock", "sold", "status")
+    for tag in soup.find_all(True):
+        attrs = " ".join(
+            f"{k}={v}" for k, v in tag.attrs.items()
+        )
+        hay = (tag.name + " " + attrs).lower()
+        if any(p in hay for p in patterns):
+            sample = norm(tag.get_text(" ", strip=True))
+            attr_hits.append({
+                "tag": tag.name,
+                "attrs": attrs[:300],
+                "text": sample[:220],
+            })
+        if len(attr_hits) >= 25:
+            break
+
+    return {
+        "requested_url": url,
+        "final_url": r.url,
+        "status_code": r.status_code,
+        "html_bytes": len(html.encode("utf-8", errors="ignore")),
+        "page_title": norm(soup.title.get_text(" ", strip=True)) if soup.title else None,
+        "seat_word_counts": {
+            w: text.count(w) + html.count(w)
+            for w in seat_words
+        },
+        "sample_times": time_matches[:40],
+        "seat_snippets": snippets,
+        "attribute_hits": attr_hits,
+        "script_count": len(soup.find_all("script")),
+        "form_count": len(soup.find_all("form")),
+        "link_count": len(soup.find_all("a")),
+    }
+
+@app.get("/seat_debug")
+def seat_debug():
+    result = {
+        "version": "v10-seat-diagnostic",
+        "toho": [],
+        "aeon": [],
+    }
+
+    for key, meta in OFFICIAL_SEAT_SOURCES.items():
+        for url in meta["urls"]:
+            try:
+                result[key].append(_seat_source_diagnostic(url))
+            except Exception as e:
+                result[key].append({
+                    "requested_url": url,
+                    "error": f"{type(e).__name__}: {str(e)[:300]}",
+                })
+
+    return jsonify(result)
+
+@app.get("/seat_debug/<key>")
+def seat_debug_one(key):
+    if key not in OFFICIAL_SEAT_SOURCES:
+        return jsonify({"error": "key must be toho or aeon"}), 400
+
+    result = {
+        "version": "v10-seat-diagnostic",
+        "theater": key,
+        "sources": [],
+    }
+
+    for url in OFFICIAL_SEAT_SOURCES[key]["urls"]:
+        try:
+            result["sources"].append(_seat_source_diagnostic(url))
+        except Exception as e:
+            result["sources"].append({
+                "requested_url": url,
+                "error": f"{type(e).__name__}: {str(e)[:300]}",
+            })
+
+    return jsonify(result)
+
+
 @app.get("/api/schedule")
 def api_schedule():
     date = request.args.get("date") or datetime.now(
@@ -211,7 +350,7 @@ def api_schedule():
         "aeon": [],
         "warnings": [],
         "source": "映画.com",
-        "version": "v9-starttime-dim",
+        "version": "v10-seat-diagnostic",
     }
 
     for key in ("toho", "aeon"):
@@ -256,7 +395,7 @@ def home():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "v9-starttime-dim"}
+    return {"ok": True, "version": "v10-seat-diagnostic", "seat_debug": "/seat_debug"}
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
