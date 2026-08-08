@@ -43,8 +43,8 @@ dialog::backdrop{background:#0009}.modal{padding:20px}.modal h2{font-size:20px;m
   <span><button id="nowBtn" class="nowbtn" type="button">現在時刻へ</button> <span id="updated"></span></span>
 </div>
 <div id="gridwrap" class="gridwrap"><div id="grid" class="grid"></div></div>
-<div id="notice" class="notice">TOHOは公式の空席状況（◎○△×）を表示します。開始時刻を過ぎた上映は薄く表示します。イオンの空席表示は調査中です。</div>
-<div style="display:none" id="buildVersion">v13-toho-seats</div></main>
+<div id="notice" class="notice">TOHOは◎○△×、イオンは○△×で公式の空席状況を表示します。開始時刻を過ぎた上映は薄く表示します。</div>
+<div style="display:none" id="buildVersion">v15-both-seats</div></main>
 
 <dialog id="detail">
  <div class="modal">
@@ -85,8 +85,12 @@ function openDetail(x,date){
  document.getElementById("detailDate").textContent=date + (x.runtime ? ` ・ 上映時間 ${x.runtime}分` : "");
  const extra=[];
  if(x.status) extra.push(`空席 ${x.status}${x.status_text?` ${x.status_text}`:""}`);
+ if(x.remaining_seats!==undefined && x.remaining_seats!==null && x.seat_count){
+   extra.push(`残り ${x.remaining_seats} / ${x.seat_count}席`);
+ } else if(x.seat_count) {
+   extra.push(`${x.seat_count}席`);
+ }
  if(x.screen) extra.push(x.screen);
- if(x.seat_count) extra.push(`${x.seat_count}席`);
  document.getElementById("detailSeat").textContent=extra.join(" ・ ");
  detail.showModal();
 }

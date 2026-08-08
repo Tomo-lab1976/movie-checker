@@ -298,7 +298,7 @@ def _seat_source_diagnostic(url):
 @app.get("/seat_debug")
 def seat_debug():
     result = {
-        "version": "v14-aeon-schedule-diagnostic",
+        "version": "v15-both-seats",
         "toho": [],
         "aeon": [],
     }
@@ -321,7 +321,7 @@ def seat_debug_one(key):
         return jsonify({"error": "key must be toho or aeon"}), 400
 
     result = {
-        "version": "v14-aeon-schedule-diagnostic",
+        "version": "v15-both-seats",
         "theater": key,
         "sources": [],
     }
@@ -467,7 +467,7 @@ def seat_debug2_one(key):
         return jsonify({"error": "key must be toho or aeon"}), 400
 
     result = {
-        "version": "v14-aeon-schedule-diagnostic",
+        "version": "v15-both-seats",
         "theater": key,
         "sources": [],
     }
@@ -618,7 +618,7 @@ def seat_data_debug_toho():
     ]
 
     return jsonify({
-        "version": "v14-aeon-schedule-diagnostic",
+        "version": "v15-both-seats",
         "theater": "toho",
         "date": date,
         "results": [
@@ -654,7 +654,7 @@ def seat_data_debug_aeon():
     ]
 
     return jsonify({
-        "version": "v14-aeon-schedule-diagnostic",
+        "version": "v15-both-seats",
         "theater": "aeon",
         "date": date_compact,
         "results": [
@@ -814,7 +814,7 @@ def aeon_path_debug():
     bundle_url = _aeon_bundle_url()
     if not bundle_url:
         return jsonify({
-            "version": "v14-aeon-schedule-diagnostic",
+            "version": "v15-both-seats",
             "error": "幕張新都心のbundle.jsを見つけられませんでした"
         }), 500
 
@@ -855,7 +855,7 @@ def aeon_path_debug():
             break
 
     return jsonify({
-        "version": "v14-aeon-schedule-diagnostic",
+        "version": "v15-both-seats",
         "bundle_url": bundle_url,
         "bundle_bytes": len(r.content),
         "excerpts": excerpts,
@@ -987,7 +987,7 @@ def aeon_schedule_debug():
         )
 
         out = {
-            "version": "v14-aeon-schedule-diagnostic",
+            "version": "v15-both-seats",
             "requested_url": url,
             "final_url": r.url,
             "status_code": r.status_code,
@@ -1029,10 +1029,216 @@ def aeon_schedule_debug():
 
     except Exception as e:
         return jsonify({
-            "version": "v14-aeon-schedule-diagnostic",
+            "version": "v15-both-seats",
             "requested_url": url,
             "error": f"{type(e).__name__}: {str(e)[:500]}",
         }), 500
+
+
+
+AEON_STATUS_LABELS = {
+    "○": "空席あり",
+    "△": "残りわずか",
+    "×": "満席",
+}
+
+def _parse_aeon_iso_to_jst_hm(value):
+    if not value:
+        return None
+    try:
+        # ISO文字列はUTC(Z)で返ってくるため、日本時間に変換
+        s = str(value)
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        dt = dt.astimezone(ZoneInfo("Asia/Tokyo"))
+        return dt.strftime("%H:%M")
+    except Exception:
+        return None
+
+def _parse_aeon_iso_to_jst_date(value):
+    if not value:
+        return None
+    try:
+        s = str(value)
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        dt = dt.astimezone(ZoneInfo("Asia/Tokyo"))
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
+def _aeon_status(maximum, remaining):
+    try:
+        maximum = int(maximum)
+        remaining = int(remaining)
+    except Exception:
+        return None, None
+
+    if maximum <= 0:
+        return None, None
+
+    if remaining <= 0:
+        return "×", "満席"
+
+    ratio = remaining / maximum
+    if ratio < 0.30:
+        return "△", "残りわずか"
+
+    return "○", "空席あり"
+
+def fetch_aeon_seat_entries(date):
+    """
+    イオンシネマ幕張新都心 公式schedule.jsonから上映回を取得。
+    公式JSと同じデータを使い、remainingAttendeeCapacity /
+    maximumAttendeeCapacity から ○△× を判定する。
+    """
+    now = datetime.now(ZoneInfo("Asia/Tokyo"))
+    stamp = now.strftime("%Y%m%d%H%M")
+    url = (
+        "https://theater.aeoncinema.com/"
+        f"schedule/v2/data/makuhari/schedule.json?v={stamp}"
+    )
+
+    headers = dict(UA)
+    headers.update({
+        "Referer": "https://theater.aeoncinema.com/theaters/makuhari/",
+        "Accept": "application/json,text/plain,*/*",
+    })
+
+    r = requests.get(
+        url,
+        headers=headers,
+        timeout=TIMEOUT,
+        allow_redirects=True,
+    )
+    r.raise_for_status()
+    data = r.json()
+
+    entries = []
+
+    def walk(obj):
+        if isinstance(obj, dict):
+            if (
+                obj.get("startDate")
+                and obj.get("endDate")
+                and (
+                    obj.get("remainingAttendeeCapacity") is not None
+                    or obj.get("maximumAttendeeCapacity") is not None
+                )
+            ):
+                show_date = _parse_aeon_iso_to_jst_date(obj.get("startDate"))
+                if show_date == date:
+                    super_event = obj.get("superEvent") or {}
+                    location = obj.get("location") or {}
+
+                    movie = None
+                    nm = super_event.get("name") if isinstance(super_event, dict) else None
+                    if isinstance(nm, dict):
+                        movie = nm.get("ja") or nm.get("en")
+                    elif nm:
+                        movie = str(nm)
+
+                    screen = None
+                    lnm = location.get("name") if isinstance(location, dict) else None
+                    if isinstance(lnm, dict):
+                        screen = lnm.get("ja") or lnm.get("en")
+                    elif lnm:
+                        screen = str(lnm)
+
+                    max_cap = obj.get("maximumAttendeeCapacity")
+                    remain_cap = obj.get("remainingAttendeeCapacity")
+                    symbol, label = _aeon_status(max_cap, remain_cap)
+
+                    entries.append({
+                        "title": movie,
+                        "start": _parse_aeon_iso_to_jst_hm(obj.get("startDate")),
+                        "end": _parse_aeon_iso_to_jst_hm(obj.get("endDate")),
+                        "status": symbol,
+                        "status_text": label,
+                        "screen": screen,
+                        "seat_count": max_cap,
+                        "remaining_seats": remain_cap,
+                        "official_id": obj.get("id"),
+                    })
+
+            for v in obj.values():
+                walk(v)
+
+        elif isinstance(obj, list):
+            for v in obj:
+                walk(v)
+
+    walk(data)
+    return entries
+
+def _norm_title_loose(s):
+    if not s:
+        return ""
+    s = str(s)
+    # 全角空白・通常空白・記号差を弱める
+    s = re.sub(r"\s+", "", s)
+    s = s.replace("：", ":").replace("・", "").replace("　", "")
+    s = s.lower()
+    return s
+
+def merge_aeon_seat_status(showings, date):
+    """
+    映画.comの表示用上映情報にイオン公式空席データを重ねる。
+    主照合は開始時刻。複数候補時はタイトルと終了時刻を補助に使う。
+    """
+    entries = fetch_aeon_seat_entries(date)
+    by_start = {}
+    for e in entries:
+        by_start.setdefault(e.get("start"), []).append(e)
+
+    matched = 0
+
+    for x in showings:
+        candidates = by_start.get(x.get("start"), [])
+        if not candidates:
+            continue
+
+        chosen = None
+
+        # 1) タイトルの緩い一致
+        xt = _norm_title_loose(x.get("title"))
+        title_matches = [
+            e for e in candidates
+            if xt and (
+                xt in _norm_title_loose(e.get("title"))
+                or _norm_title_loose(e.get("title")) in xt
+            )
+        ]
+        if len(title_matches) == 1:
+            chosen = title_matches[0]
+
+        # 2) 終了時刻の一致
+        if chosen is None and x.get("end"):
+            end_matches = [e for e in candidates if e.get("end") == x.get("end")]
+            if len(end_matches) == 1:
+                chosen = end_matches[0]
+
+        # 3) 開始時刻で一意
+        if chosen is None and len(candidates) == 1:
+            chosen = candidates[0]
+
+        if chosen is None:
+            continue
+
+        x["status"] = chosen.get("status")
+        x["status_text"] = chosen.get("status_text")
+        x["screen"] = chosen.get("screen")
+        x["seat_count"] = chosen.get("seat_count")
+        x["remaining_seats"] = chosen.get("remaining_seats")
+        x["seat_source"] = "AEON公式"
+
+        if chosen.get("end"):
+            x["end"] = chosen["end"]
+
+        matched += 1
+
+    return {
+        "matched": matched,
+        "official_entries": len(entries),
+    }
 
 
 @app.get("/api/schedule")
@@ -1047,7 +1253,7 @@ def api_schedule():
         "aeon": [],
         "warnings": [],
         "source": "映画.com",
-        "version": "v14-aeon-schedule-diagnostic",
+        "version": "v15-both-seats",
     }
 
     for key in ("toho", "aeon"):
@@ -1062,14 +1268,26 @@ def api_schedule():
                 f"{key}: {type(e).__name__}: {str(e)[:160]}"
             )
 
-    # TOHOのみ、公式APIの空席状況を本番表示へ反映
-    result["seat_sources"] = {"toho": "TOHO公式API", "aeon": None}
+    # 両館とも公式データの空席状況を本番表示へ反映
+    result["seat_sources"] = {
+        "toho": "TOHO公式API",
+        "aeon": "AEON公式schedule.json",
+    }
+
     try:
         merge_info = merge_toho_seat_status(result["toho"], date)
         result["toho_seat_merge"] = merge_info
     except Exception as e:
         result["warnings"].append(
             f"toho seats: {type(e).__name__}: {str(e)[:180]}"
+        )
+
+    try:
+        merge_info = merge_aeon_seat_status(result["aeon"], date)
+        result["aeon_seat_merge"] = merge_info
+    except Exception as e:
+        result["warnings"].append(
+            f"aeon seats: {type(e).__name__}: {str(e)[:180]}"
         )
 
     result["updated_at"] = datetime.now(
@@ -1102,7 +1320,7 @@ def home():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "v14-aeon-schedule-diagnostic", "aeon_schedule_debug": "/aeon_schedule_debug"}
+    return {"ok": True, "version": "v15-both-seats"}
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
