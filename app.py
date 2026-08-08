@@ -26,6 +26,16 @@ THEATERS = {
     },
 }
 
+IGNORE_H2 = {
+    "上映スケジュール",
+    "映画館情報・割引情報",
+    "近くの映画館",
+    "近くのエリア",
+    "都道府県別",
+    "劇場情報",
+    "アクセス・地図",
+}
+
 def fetch(url):
     r = requests.get(url, headers=UA, timeout=TIMEOUT)
     r.raise_for_status()
@@ -35,75 +45,83 @@ def fetch(url):
 def norm(s):
     return re.sub(r"\s+", " ", s or "").strip()
 
+def looks_like_movie_title(title):
+    if not title or title in IGNORE_H2:
+        return False
+    if len(title) > 100:
+        return False
+    bad_words = ("上映スケジュール", "映画館情報", "割引情報", "近くの映画館",
+                 "都道府県別", "アクセス", "地図", "劇場情報")
+    return not any(x in title for x in bad_words)
+
 def movie_sections(html):
     """
-    h2 の直後から次の h2 までを、その作品のスケジュール領域として読む。
-    ページ全体の find() は使わないので、同じ作品名が別場所に出ても影響しにくい。
+    作品の h2 から次の h2 直前までを作品ブロックとして読む。
+    /movie/ リンクの有無は条件にしない。
     """
     soup = BeautifulSoup(html, "html.parser")
 
     for bad in soup(["script", "style", "noscript"]):
         bad.decompose()
 
+    h2s = soup.find_all("h2")
     sections = []
 
-    for h2 in soup.find_all("h2"):
+    for h2 in h2s:
         title = norm(h2.get_text(" ", strip=True))
-        if not title:
+        if not looks_like_movie_title(title):
             continue
 
-        # 映画タイトルの h2 には、多くの場合 /movie/ へのリンクが含まれる。
-        movie_link = h2.find("a", href=re.compile(r"/movie/"))
-        if not movie_link:
-            continue
-
-        title = norm(movie_link.get_text(" ", strip=True)) or title
-
-        chunks = []
-        node = h2.next_sibling
-
-        while node is not None:
-            # 次の h2 に来たら、その作品の領域は終了
-            if isinstance(node, Tag) and node.name == "h2":
+        # h2の後ろにある要素を、次のh2まで連結
+        parts = []
+        for el in h2.find_all_next():
+            if el is h2:
+                continue
+            if isinstance(el, Tag) and el.name == "h2":
                 break
 
-            if isinstance(node, Tag):
-                txt = norm(node.get_text(" ", strip=True))
-            else:
-                txt = norm(str(node))
+            # 重複を減らすため、主に小さめのブロックのみ拾う
+            if isinstance(el, Tag) and el.name in (
+                "div", "p", "li", "span", "time", "strong", "em"
+            ):
+                txt = norm(el.get_text(" ", strip=True))
+                if txt:
+                    parts.append(txt)
 
-            if txt:
-                chunks.append(txt)
+        text = " ".join(parts)
 
-            node = node.next_sibling
-
-        text = " ".join(chunks)
-
-        # 上映日がある領域だけ採用
+        # 上映日が存在するものだけ作品として採用
         if re.search(r"\d{1,2}/\d{1,2}[（(][月火水木金土日][）)]", text):
             sections.append((title, text))
 
-    return sections
+    # 同名タイトルの重複除去
+    seen = set()
+    out = []
+    for title, text in sections:
+        if title not in seen:
+            seen.add(title)
+            out.append((title, text))
+    return out
 
-def date_block(text, date):
+def extract_date_block(text, date):
     dt = datetime.strptime(date, "%Y-%m-%d")
     md = f"{dt.month}/{dt.day}"
 
-    # 対象日から、次の日付までを切り出す
-    m = re.search(
+    # 対象日から次の日付まで
+    pat = re.compile(
         rf"{re.escape(md)}[（(][月火水木金土日][）)]\s*(.*?)"
-        rf"(?=\s*\|\s*\d{{1,2}}/\d{{1,2}}[（(][月火水木金土日][）)]"
-        rf"|\s+\d{{1,2}}/\d{{1,2}}[（(][月火水木金土日][）)]"
-        rf"|$)",
-        text
+        rf"(?="
+        rf"\s*\|?\s*\d{{1,2}}/\d{{1,2}}[（(][月火水木金土日][）)]"
+        rf"|$)"
     )
+    m = pat.search(text)
     return m.group(1) if m else ""
 
-def start_times(block):
+def extract_start_times(block):
     if not block:
         return []
 
-    # 20:50～22:35 のような表記は開始時刻 20:50 だけ残す
+    # 「20:40～23:00」の終了時刻を除去し、開始時刻だけ残す
     cleaned = re.sub(
         r"([0-2]?\d:\d{2})\s*[～〜~-]\s*([0-2]?\d:\d{2})",
         r"\1",
@@ -111,16 +129,14 @@ def start_times(block):
     )
 
     times = re.findall(r"(?<!\d)([0-2]?\d:\d{2})(?!\d)", cleaned)
-
     out = []
+
     for t in times:
-        h, m = t.split(":")
-        hh = int(h)
-        mm = int(m)
-        if 0 <= hh <= 29 and 0 <= mm <= 59:
-            t2 = f"{hh:02d}:{mm:02d}"
-            if t2 not in out:
-                out.append(t2)
+        h, m = map(int, t.split(":"))
+        if 0 <= h <= 29 and 0 <= m <= 59:
+            value = f"{h:02d}:{m:02d}"
+            if value not in out:
+                out.append(value)
     return out
 
 def scrape_theater(key, date):
@@ -128,8 +144,8 @@ def scrape_theater(key, date):
     result = []
 
     for title, text in movie_sections(html):
-        block = date_block(text, date)
-        for start in start_times(block):
+        block = extract_date_block(text, date)
+        for start in extract_start_times(block):
             result.append({
                 "title": title,
                 "start": start,
@@ -139,14 +155,14 @@ def scrape_theater(key, date):
 
     # 重複除去
     seen = set()
-    dedup = []
+    out = []
     for x in result:
         k = (x["title"], x["start"])
         if k not in seen:
             seen.add(k)
-            dedup.append(x)
+            out.append(x)
 
-    return sorted(dedup, key=lambda x: (x["start"], x["title"]))
+    return sorted(out, key=lambda x: (x["start"], x["title"]))
 
 @app.get("/api/schedule")
 def api_schedule():
@@ -182,9 +198,6 @@ def api_schedule():
 
 @app.get("/debug")
 def debug():
-    """
-    次回のトラブル時に、各館で何作品の見出しを拾えているか確認する診断用。
-    """
     out = {}
     for key in ("toho", "aeon"):
         try:
@@ -192,10 +205,13 @@ def debug():
             secs = movie_sections(html)
             out[key] = {
                 "sections": len(secs),
-                "sample_titles": [x[0] for x in secs[:5]],
+                "sample_titles": [x[0] for x in secs[:8]],
+                "html_bytes": len(html.encode("utf-8")),
             }
         except Exception as e:
-            out[key] = {"error": f"{type(e).__name__}: {e}"}
+            out[key] = {
+                "error": f"{type(e).__name__}: {e}"
+            }
     return jsonify(out)
 
 @app.get("/")
