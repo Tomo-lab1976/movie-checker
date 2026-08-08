@@ -91,7 +91,7 @@ def movie_sections(html):
         text = " ".join(parts)
 
         # 上映日が存在するものだけ作品として採用
-        if re.search(r"\d{1,2}/\d{1,2}[（(][月火水木金土日][）)]", text):
+        if re.search(r"\d{1,2}/\d{1,2}\s*[（(][月火水木金土日][）)]", text):
             sections.append((title, text))
 
     # 同名タイトルの重複除去
@@ -107,15 +107,23 @@ def extract_date_block(text, date):
     dt = datetime.strptime(date, "%Y-%m-%d")
     md = f"{dt.month}/{dt.day}"
 
-    # 対象日から次の日付まで
-    pat = re.compile(
-        rf"{re.escape(md)}[（(][月火水木金土日][）)]\s*(.*?)"
-        rf"(?="
-        rf"\s*\|?\s*\d{{1,2}}/\d{{1,2}}[（(][月火水木金土日][）)]"
-        rf"|$)"
+    # 映画.comでは「8/8 （土）」のように日付と曜日の間に空白が入ることがある
+    start_pat = rf"{re.escape(md)}\s*[（(][月火水木金土日][）)]"
+    m = re.search(start_pat, text)
+    if not m:
+        return ""
+
+    rest = text[m.end():]
+
+    # 次の日付が始まる直前までを対象日の上映ブロックとする
+    n = re.search(
+        r"\d{1,2}/\d{1,2}\s*[（(][月火水木金土日][）)]",
+        rest
     )
-    m = pat.search(text)
-    return m.group(1) if m else ""
+    if n:
+        rest = rest[:n.start()]
+
+    return rest
 
 def extract_start_times(block):
     if not block:
@@ -176,6 +184,7 @@ def api_schedule():
         "aeon": [],
         "warnings": [],
         "source": "映画.com",
+        "version": "v6-parser",
     }
 
     for key in ("toho", "aeon"):
@@ -220,7 +229,7 @@ def home():
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    return {"ok": True, "version": "v6-parser"}
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
