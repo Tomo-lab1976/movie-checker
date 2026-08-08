@@ -12,7 +12,7 @@
 h1{font-size:25px;margin:0 0 4px}.sub{font-size:12px;color:var(--muted);margin-bottom:16px}
 .tabs{display:flex;gap:7px;overflow-x:auto;overflow-y:hidden;padding-bottom:5px;margin-bottom:8px;flex:0 0 auto}.tabs::-webkit-scrollbar{display:none}
 .tab{flex:0 0 auto;border:1px solid var(--line);background:#222831;color:#fff;border-radius:12px;padding:9px 12px;font-weight:800;cursor:pointer}
-.tab.active{background:var(--blue);border-color:var(--blue)}.nowbtn{border:1px solid #555f6c;background:#252b34;color:#fff;border-radius:9px;padding:5px 8px;font-size:11px;font-weight:800;cursor:pointer}
+.tab.active{background:var(--blue);border-color:var(--blue)}.nowbtn{border:1px solid #555f6c;background:#252b34;color:#fff;border-radius:9px;padding:5px 8px;font-size:11px;font-weight:800;cursor:pointer}.nowbtn:disabled{opacity:.65;cursor:wait}
 .controls{display:flex;justify-content:space-between;align-items:center;margin:6px 0 8px;font-size:12px;color:var(--muted);flex:0 0 auto}
 .gridwrap{position:relative;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;border-radius:16px;scroll-behavior:smooth}
 .grid{display:grid;grid-template-columns:54px 1fr 1fr;border:1px solid var(--line);border-radius:16px;overflow:visible}
@@ -40,11 +40,11 @@ dialog::backdrop{background:#0009}.modal{padding:20px}.modal h2{font-size:20px;m
 <div id="tabs" class="tabs"></div>
 <div class="controls">
   <span>時間から見る</span>
-  <span><button id="nowBtn" class="nowbtn" type="button">現在時刻へ</button> <span id="updated"></span></span>
+  <span><button id="nowBtn" class="nowbtn" type="button">更新して現在時刻へ</button> <span id="updated"></span></span>
 </div>
 <div id="gridwrap" class="gridwrap"><div id="grid" class="grid"></div></div>
 <div id="notice" class="notice">TOHOは◎○△×、イオンは○△×で公式の空席状況を表示します。開始時刻を過ぎた上映は薄く表示します。</div>
-<div style="display:none" id="buildVersion">v1.0-clean</div></main>
+<div style="display:none" id="buildVersion">v1.1</div></main>
 
 <dialog id="detail">
  <div class="modal">
@@ -171,10 +171,25 @@ function addNowLine(date,hours){
  line.innerHTML=`<span>現在 ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}</span>`;
  gridwrap.appendChild(line);
 }
-document.getElementById("nowBtn").onclick=()=>{
- const active=document.querySelector(".tab.active");
- if(active && active.dataset.date===ymd(new Date())) scrollToUsefulPosition(active.dataset.date);
- else load(ymd(new Date()));
+const nowBtn=document.getElementById("nowBtn");
+let isRefreshing=false;
+nowBtn.onclick=async()=>{
+ if(isRefreshing) return;
+
+ isRefreshing=true;
+ nowBtn.disabled=true;
+ nowBtn.textContent="更新中…";
+
+ try{
+   const today=ymd(new Date());
+   await load(today);
+   // 最新データの描画完了後、その画面上の現在時刻へ移動する
+   requestAnimationFrame(()=>scrollToUsefulPosition(today));
+ }finally{
+   isRefreshing=false;
+   nowBtn.disabled=false;
+   nowBtn.textContent="更新して現在時刻へ";
+ }
 };
 load(ymd(dates[0]));
 </script></body></html>
