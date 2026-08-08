@@ -43,7 +43,7 @@ dialog::backdrop{background:#0009}.modal{padding:20px}.modal h2{font-size:20px;m
   <span><button id="nowBtn" class="nowbtn" type="button">現在時刻へ</button> <span id="updated"></span></span>
 </div>
 <div id="gridwrap" class="gridwrap"><div id="grid" class="grid"></div></div>
-<div id="notice" class="notice">今日を開くと現在時刻付近へ自動移動します。終了時刻は掲載値を優先し、無い回は上映時間から補完しています。</div>
+<div id="notice" class="notice">今日を開くと現在時刻付近へ自動移動します。開始時刻を過ぎた上映は薄く表示します。終了時刻は掲載値を優先し、無い回は上映時間から補完しています。</div>
 </main>
 
 <dialog id="detail">
@@ -74,8 +74,8 @@ function minutes(t){if(!t)return null;const [h,m]=t.split(":").map(Number);retur
 function isFinished(x,date){
  if(date!==ymd(new Date())) return false;
  const now=new Date(), nowm=now.getHours()*60+now.getMinutes();
- const end=minutes(x.end);
- return end!==null ? end<nowm : minutes(x.start)<nowm;
+ const start=minutes(x.start);
+ return start!==null && start<=nowm;
 }
 function timeLabel(x){return x.end ? `${x.start} → ${x.end}` : `${x.start}`}
 function openDetail(x,date){
