@@ -7,17 +7,17 @@
 <title>映画チェック</title>
 <style>
 :root{--bg:#0f1115;--card:#191d24;--line:#303640;--text:#f7f8fa;--muted:#9aa4b2;--blue:#226fd4;--red:#ff5a5f}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Sans","Noto Sans JP",sans-serif}
-.wrap{max-width:920px;margin:auto;padding:18px 12px 50px}
+*{box-sizing:border-box}html,body{height:100%;overflow:hidden}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Sans","Noto Sans JP",sans-serif}
+.wrap{max-width:920px;height:100vh;margin:auto;padding:14px 12px 12px;display:flex;flex-direction:column;overflow:hidden}
 h1{font-size:25px;margin:0 0 4px}.sub{font-size:12px;color:var(--muted);margin-bottom:16px}
-.tabs{display:flex;gap:7px;overflow:auto;padding-bottom:5px;margin-bottom:12px}.tabs::-webkit-scrollbar{display:none}
+.tabs{display:flex;gap:7px;overflow-x:auto;overflow-y:hidden;padding-bottom:5px;margin-bottom:8px;flex:0 0 auto}.tabs::-webkit-scrollbar{display:none}
 .tab{flex:0 0 auto;border:1px solid var(--line);background:#222831;color:#fff;border-radius:12px;padding:9px 12px;font-weight:800;cursor:pointer}
-.tab.active{background:var(--blue);border-color:var(--blue)}
-.controls{display:flex;justify-content:space-between;align-items:center;margin:10px 0 12px;font-size:12px;color:var(--muted)}
-.gridwrap{position:relative}
-.grid{display:grid;grid-template-columns:54px 1fr 1fr;border:1px solid var(--line);border-radius:16px;overflow:hidden}
+.tab.active{background:var(--blue);border-color:var(--blue)}.nowbtn{border:1px solid #555f6c;background:#252b34;color:#fff;border-radius:9px;padding:5px 8px;font-size:11px;font-weight:800;cursor:pointer}
+.controls{display:flex;justify-content:space-between;align-items:center;margin:6px 0 8px;font-size:12px;color:var(--muted);flex:0 0 auto}
+.gridwrap{position:relative;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;border-radius:16px;scroll-behavior:smooth}
+.grid{display:grid;grid-template-columns:54px 1fr 1fr;border:1px solid var(--line);border-radius:16px;overflow:visible}
 .cell{min-height:48px;padding:8px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
-.head{font-weight:800;min-height:auto;position:sticky;top:0;z-index:5}.th1{background:#482025}.th2{background:#322053}
+.head{font-weight:800;min-height:auto;position:sticky;top:0;z-index:10;box-shadow:0 1px 0 var(--line)}.th1{background:#482025}.th2{background:#322053}
 .hour{color:var(--muted);font-size:12px;text-align:center}
 .show{border-radius:10px;padding:7px 8px;margin:3px 0;font-size:12px;line-height:1.35;border-left:5px solid transparent;transition:.15s;box-shadow:inset 0 0 0 1px #ffffff18}
 .show.finished{opacity:.32;filter:saturate(.40) brightness(.72)}
@@ -26,8 +26,8 @@ h1{font-size:25px;margin:0 0 4px}.sub{font-size:12px;color:var(--muted);margin-b
 .titlebtn:hover{text-decoration:underline}
 .seat{float:right;font-weight:900}.ok{color:#64d98b}.some{color:#75b8ff}.few{color:#ffb45c}.none{color:#aaa}
 .now-marker{position:absolute;left:0;right:0;height:0;border-top:2px solid var(--red);z-index:4;pointer-events:none}
-.now-marker span{position:absolute;left:2px;top:-19px;background:var(--red);color:#fff;font-size:10px;font-weight:900;padding:2px 5px;border-radius:5px}
-.notice{padding:12px;border-radius:12px;background:#201f24;color:#c4cad3;font-size:12px;line-height:1.55;margin-top:12px}
+.now-marker span{position:absolute;left:2px;top:-19px;background:var(--red);color:#fff;font-size:10px;font-weight:900;padding:2px 5px;border-radius:5px;box-shadow:0 1px 4px #0008}
+.notice{padding:8px 10px;border-radius:10px;background:#201f24;color:#c4cad3;font-size:11px;line-height:1.45;margin-top:8px;flex:0 0 auto}
 .error{background:#411f22;color:#ffc7c7}
 dialog{width:min(92vw,460px);border:1px solid #424955;border-radius:18px;background:#191d24;color:#fff;padding:0;box-shadow:0 22px 80px #000a}
 dialog::backdrop{background:#0009}.modal{padding:20px}.modal h2{font-size:20px;margin:0 0 14px}.detailrow{color:#c8d0da;margin:8px 0}.detailtime{font-size:22px;font-weight:900;color:#fff}.close{margin-top:16px;width:100%;border:0;border-radius:11px;padding:11px;background:#303640;color:#fff;font-weight:800;cursor:pointer}
@@ -38,9 +38,12 @@ dialog::backdrop{background:#0009}.modal{padding:20px}.modal h2{font-size:20px;m
 <h1>映画チェック</h1>
 <div class="sub">TOHOシネマズ 八千代緑が丘 × イオンシネマ幕張新都心</div>
 <div id="tabs" class="tabs"></div>
-<div class="controls"><span>時間から見る</span><span id="updated"></span></div>
+<div class="controls">
+  <span>時間から見る</span>
+  <span><button id="nowBtn" class="nowbtn" type="button">現在時刻へ</button> <span id="updated"></span></span>
+</div>
 <div id="gridwrap" class="gridwrap"><div id="grid" class="grid"></div></div>
-<div id="notice" class="notice">終了時刻は、掲載値を優先し、無い回は作品の上映時間から補完しています。今日の終了済み上映は薄く表示します。</div>
+<div id="notice" class="notice">今日を開くと現在時刻付近へ自動移動します。終了時刻は掲載値を優先し、無い回は上映時間から補完しています。</div>
 </main>
 
 <dialog id="detail">
@@ -121,6 +124,27 @@ function render(data){
  grid.innerHTML=html || '<div class="cell">この日の上映情報はまだありません。</div>';
  grid.querySelectorAll(".titlebtn").forEach(b=>b.onclick=()=>openDetail(JSON.parse(decodeURIComponent(b.dataset.movie)),data.date));
  addNowLine(data.date,hours);
+ requestAnimationFrame(()=>scrollToUsefulPosition(data.date));
+}
+
+
+function scrollToUsefulPosition(date){
+ if(date!==ymd(new Date())){
+   gridwrap.scrollTop=0;
+   return;
+ }
+ const now=new Date();
+ const hh=String(now.getHours()).padStart(2,"0");
+ let target=grid.querySelector(`.hour[data-hour="${hh}"]`);
+ if(!target){
+   const hourCells=[...grid.querySelectorAll(".hour")];
+   target=hourCells.find(el=>Number(el.dataset.hour)>=now.getHours()) || hourCells[hourCells.length-1];
+ }
+ if(!target) return;
+
+ // 現在時刻の少し前（約1時間分）が見える位置にする
+ const top=Math.max(0,target.offsetTop - Math.max(80, gridwrap.clientHeight*0.18));
+ gridwrap.scrollTop=top;
 }
 
 function addNowLine(date,hours){
@@ -138,5 +162,10 @@ function addNowLine(date,hours){
  line.innerHTML=`<span>現在 ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}</span>`;
  gridwrap.appendChild(line);
 }
+document.getElementById("nowBtn").onclick=()=>{
+ const active=document.querySelector(".tab.active");
+ if(active && active.dataset.date===ymd(new Date())) scrollToUsefulPosition(active.dataset.date);
+ else load(ymd(new Date()));
+};
 load(ymd(dates[0]));
 </script></body></html>

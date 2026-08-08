@@ -211,7 +211,7 @@ def api_schedule():
         "aeon": [],
         "warnings": [],
         "source": "映画.com",
-        "version": "v8-bright-endtimes",
+        "version": "v9-sticky-scroll",
     }
 
     for key in ("toho", "aeon"):
@@ -256,7 +256,7 @@ def home():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "v8-bright-endtimes"}
+    return {"ok": True, "version": "v9-sticky-scroll"}
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
