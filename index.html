@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<title>映画チェック</title>
+<style>
+:root{--bg:#0f1115;--card:#191d24;--line:#303640;--text:#f7f8fa;--muted:#9aa4b2;--blue:#226fd4;--red:#ff5a5f}
+*{box-sizing:border-box}html,body{height:100%;overflow:hidden}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Hiragino Sans","Noto Sans JP",sans-serif}
+.wrap{max-width:920px;height:100vh;margin:auto;padding:14px 12px 12px;display:flex;flex-direction:column;overflow:hidden}
+h1{font-size:25px;margin:0 0 4px}.sub{font-size:12px;color:var(--muted);margin-bottom:16px}
+.tabs{display:flex;gap:7px;overflow-x:auto;overflow-y:hidden;padding-bottom:5px;margin-bottom:8px;flex:0 0 auto}.tabs::-webkit-scrollbar{display:none}
+.tab{flex:0 0 auto;border:1px solid var(--line);background:#222831;color:#fff;border-radius:12px;padding:9px 12px;font-weight:800;cursor:pointer}
+.tab.active{background:var(--blue);border-color:var(--blue)}.nowbtn{border:1px solid #555f6c;background:#252b34;color:#fff;border-radius:9px;padding:5px 8px;font-size:11px;font-weight:800;cursor:pointer}
+.controls{display:flex;justify-content:space-between;align-items:center;margin:6px 0 8px;font-size:12px;color:var(--muted);flex:0 0 auto}
+.gridwrap{position:relative;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;border-radius:16px;scroll-behavior:smooth}
+.grid{display:grid;grid-template-columns:54px 1fr 1fr;border:1px solid var(--line);border-radius:16px;overflow:visible}
+.cell{min-height:48px;padding:8px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
+.head{font-weight:800;min-height:auto;position:sticky;top:0;z-index:10;box-shadow:0 1px 0 var(--line)}.th1{background:#482025}.th2{background:#322053}
+.hour{color:var(--muted);font-size:12px;text-align:center}
+.show{border-radius:10px;padding:7px 8px;margin:3px 0;font-size:12px;line-height:1.35;border-left:5px solid transparent;transition:.15s;box-shadow:inset 0 0 0 1px #ffffff18}
+.show.finished{opacity:.32;filter:saturate(.40) brightness(.72)}
+.time{font-weight:900;font-size:14px;letter-spacing:.1px}
+.titlebtn{display:block;width:100%;margin-top:3px;padding:0;border:0;background:none;color:inherit;text-align:left;font:inherit;font-weight:700;cursor:pointer}
+.titlebtn:hover{text-decoration:underline}
+.seat{float:right;font-weight:900;font-size:12px}.ok{color:#7df2a5}.some{color:#85c4ff}.few{color:#ffc066}.soldout{color:#ff8d91}.none{color:#aaa}
+.now-marker{position:absolute;left:0;right:0;height:0;border-top:2px solid var(--red);z-index:4;pointer-events:none}
+.now-marker span{position:absolute;left:2px;top:-19px;background:var(--red);color:#fff;font-size:10px;font-weight:900;padding:2px 5px;border-radius:5px;box-shadow:0 1px 4px #0008}
+.notice{padding:8px 10px;border-radius:10px;background:#201f24;color:#c4cad3;font-size:11px;line-height:1.45;margin-top:8px;flex:0 0 auto}
+.error{background:#411f22;color:#ffc7c7}
+dialog{width:min(92vw,460px);border:1px solid #424955;border-radius:18px;background:#191d24;color:#fff;padding:0;box-shadow:0 22px 80px #000a}
+dialog::backdrop{background:#0009}.modal{padding:20px}.modal h2{font-size:20px;margin:0 0 14px}.detailrow{color:#c8d0da;margin:8px 0}.detailtime{font-size:22px;font-weight:900;color:#fff}.close{margin-top:16px;width:100%;border:0;border-radius:11px;padding:11px;background:#303640;color:#fff;font-weight:800;cursor:pointer}
+@media(max-width:560px){.wrap{padding-left:8px;padding-right:8px}.grid{grid-template-columns:45px 1fr 1fr}.cell{padding:6px}.show{padding:6px}.time{font-size:13px}.titlebtn{font-size:11px}.head{font-size:12px}}
+</style>
+</head>
+<body><main class="wrap">
+<h1>映画チェック</h1>
+<div class="sub">TOHOシネマズ 八千代緑が丘 × イオンシネマ幕張新都心</div>
+<div id="tabs" class="tabs"></div>
+<div class="controls">
+  <span>時間から見る</span>
+  <span><button id="nowBtn" class="nowbtn" type="button">現在時刻へ</button> <span id="updated"></span></span>
+</div>
+<div id="gridwrap" class="gridwrap"><div id="grid" class="grid"></div></div>
+<div id="notice" class="notice">TOHOは公式の空席状況（◎○△×）を表示します。開始時刻を過ぎた上映は薄く表示します。イオンの空席表示は調査中です。</div>
+<div style="display:none" id="buildVersion">v14-aeon-schedule-diagnostic</div></main>
+
+<dialog id="detail">
+ <div class="modal">
+   <h2 id="detailTitle"></h2>
+   <div class="detailrow detailtime" id="detailTime"></div>
+   <div class="detailrow" id="detailTheater"></div>
+   <div class="detailrow" id="detailDate"></div><div class="detailrow" id="detailSeat"></div>
+   <button class="close" id="closeDetail">閉じる</button>
+ </div>
+</dialog>
+
+<script>
+const tabs=document.getElementById("tabs"), grid=document.getElementById("grid"), gridwrap=document.getElementById("gridwrap"), notice=document.getElementById("notice");
+const detail=document.getElementById("detail");
+const dates=[...Array(7)].map((_,i)=>{let d=new Date();d.setHours(0,0,0,0);d.setDate(d.getDate()+i);return d});
+const ymd=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+function label(d,i){if(i===0)return"今日";if(i===1)return"明日";return `${d.getMonth()+1}/${d.getDate()}(${["日","月","火","水","木","金","土"][d.getDay()]})`}
+dates.forEach((d,i)=>{let b=document.createElement("button");b.className="tab";b.dataset.date=ymd(d);b.textContent=label(d,i);b.onclick=()=>load(b.dataset.date);tabs.appendChild(b)});
+function esc(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]))}
+function seatClass(s){return s==="◎"?"ok":s==="○"?"some":s==="△"?"few":s==="×"?"soldout":"none"}
+function hashColor(title){
+ let h=0; for(let i=0;i<title.length;i++) h=(h*31+title.charCodeAt(i))>>>0;
+ const hue=h%360;
+ return {bg:`hsl(${hue} 55% 34%)`, border:`hsl(${hue} 88% 68%)`};
+}
+function minutes(t){if(!t)return null;const [h,m]=t.split(":").map(Number);return h*60+m}
+function isFinished(x,date){
+ if(date!==ymd(new Date())) return false;
+ const now=new Date(), nowm=now.getHours()*60+now.getMinutes();
+ const start=minutes(x.start);
+ return start!==null && start<=nowm;
+}
+function timeLabel(x){return x.end ? `${x.start} → ${x.end}` : `${x.start}`}
+function openDetail(x,date){
+ document.getElementById("detailTitle").textContent=x.title;
+ document.getElementById("detailTime").textContent=x.end ? `${x.start} → ${x.end}` : `${x.start} 開始`;
+ document.getElementById("detailTheater").textContent=x.theater==="toho" ? "TOHOシネマズ 八千代緑が丘" : "イオンシネマ幕張新都心";
+ document.getElementById("detailDate").textContent=date + (x.runtime ? ` ・ 上映時間 ${x.runtime}分` : "");
+ const extra=[];
+ if(x.status) extra.push(`空席 ${x.status}${x.status_text?` ${x.status_text}`:""}`);
+ if(x.screen) extra.push(x.screen);
+ if(x.seat_count) extra.push(`${x.seat_count}席`);
+ document.getElementById("detailSeat").textContent=extra.join(" ・ ");
+ detail.showModal();
+}
+document.getElementById("closeDetail").onclick=()=>detail.close();
+detail.addEventListener("click",e=>{if(e.target===detail)detail.close()});
+
+async function load(date){
+ document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active",b.dataset.date===date));
+ grid.innerHTML='<div class="cell">読込中…</div>'; notice.className="notice";
+ document.querySelector(".now-marker")?.remove();
+ try{
+  const r=await fetch(`/api/schedule?date=${date}`); if(!r.ok) throw new Error("上映情報を取得できませんでした");
+  const data=await r.json(); render(data);
+  document.getElementById("updated").textContent=data.updated_at ? `更新 ${data.updated_at}`:"";
+  if(data.warnings?.length){notice.textContent="一部の情報を取得できませんでした。映画館公式ページの変更時は修正が必要です。";notice.className="notice error"}
+ }catch(e){grid.innerHTML="";notice.textContent=e.message;notice.className="notice error"}
+}
+
+function render(data){
+ const all=[...(data.toho||[]).map(x=>({...x,theater:"toho"})),...(data.aeon||[]).map(x=>({...x,theater:"aeon"}))];
+ const hours=[...new Set(all.map(x=>x.start?.slice(0,2)).filter(Boolean))].sort();
+ let html='<div class="cell head">時刻</div><div class="cell head th1">TOHO 八千代緑が丘</div><div class="cell head th2">イオン 幕張新都心</div>';
+ for(const h of hours){
+   html+=`<div class="cell hour" data-hour="${h}">${h}:00</div>`;
+   for(const th of ["toho","aeon"]){
+     html+='<div class="cell">';
+     for(const x of all.filter(v=>v.theater===th && v.start.startsWith(h))){
+       const seat=x.status?`<span class="seat ${seatClass(x.status)}">${esc(x.status)}${x.status_text?` ${esc(x.status_text)}`:""}</span>`:"";
+       const c=hashColor(x.title);
+       const finished=isFinished(x,data.date)?" finished":"";
+       const payload=encodeURIComponent(JSON.stringify({...x,theater:th}));
+       html+=`<div class="show${finished}" style="background:${c.bg};border-left-color:${c.border}">
+         <span class="time">${esc(timeLabel(x))}</span>${seat}
+         <button class="titlebtn" data-movie="${payload}">${esc(x.title)}</button>
+       </div>`;
+     }
+     html+='</div>';
+   }
+ }
+ grid.innerHTML=html || '<div class="cell">この日の上映情報はまだありません。</div>';
+ grid.querySelectorAll(".titlebtn").forEach(b=>b.onclick=()=>openDetail(JSON.parse(decodeURIComponent(b.dataset.movie)),data.date));
+ addNowLine(data.date,hours);
+ requestAnimationFrame(()=>scrollToUsefulPosition(data.date));
+}
+
+
+function scrollToUsefulPosition(date){
+ if(date!==ymd(new Date())){
+   gridwrap.scrollTop=0;
+   return;
+ }
+ const now=new Date();
+ const hh=String(now.getHours()).padStart(2,"0");
+ let target=grid.querySelector(`.hour[data-hour="${hh}"]`);
+ if(!target){
+   const hourCells=[...grid.querySelectorAll(".hour")];
+   target=hourCells.find(el=>Number(el.dataset.hour)>=now.getHours()) || hourCells[hourCells.length-1];
+ }
+ if(!target) return;
+
+ // 現在時刻の少し前（約1時間分）が見える位置にする
+ const top=Math.max(0,target.offsetTop - Math.max(80, gridwrap.clientHeight*0.18));
+ gridwrap.scrollTop=top;
+}
+
+function addNowLine(date,hours){
+ if(date!==ymd(new Date()) || !hours.length) return;
+ const now=new Date(), hh=String(now.getHours()).padStart(2,"0");
+ const hourCell=grid.querySelector(`.hour[data-hour="${hh}"]`);
+ if(!hourCell) return;
+
+ const rowTop=hourCell.offsetTop;
+ const rowHeight=hourCell.offsetHeight;
+ const fraction=now.getMinutes()/60;
+ const line=document.createElement("div");
+ line.className="now-marker";
+ line.style.top=`${rowTop + rowHeight*fraction}px`;
+ line.innerHTML=`<span>現在 ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}</span>`;
+ gridwrap.appendChild(line);
+}
+document.getElementById("nowBtn").onclick=()=>{
+ const active=document.querySelector(".tab.active");
+ if(active && active.dataset.date===ymd(new Date())) scrollToUsefulPosition(active.dataset.date);
+ else load(ymd(new Date()));
+};
+load(ymd(dates[0]));
+</script></body></html>

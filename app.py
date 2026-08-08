@@ -298,7 +298,7 @@ def _seat_source_diagnostic(url):
 @app.get("/seat_debug")
 def seat_debug():
     result = {
-        "version": "v13-toho-seats",
+        "version": "v14-aeon-schedule-diagnostic",
         "toho": [],
         "aeon": [],
     }
@@ -321,7 +321,7 @@ def seat_debug_one(key):
         return jsonify({"error": "key must be toho or aeon"}), 400
 
     result = {
-        "version": "v13-toho-seats",
+        "version": "v14-aeon-schedule-diagnostic",
         "theater": key,
         "sources": [],
     }
@@ -467,7 +467,7 @@ def seat_debug2_one(key):
         return jsonify({"error": "key must be toho or aeon"}), 400
 
     result = {
-        "version": "v13-toho-seats",
+        "version": "v14-aeon-schedule-diagnostic",
         "theater": key,
         "sources": [],
     }
@@ -618,7 +618,7 @@ def seat_data_debug_toho():
     ]
 
     return jsonify({
-        "version": "v13-toho-seats",
+        "version": "v14-aeon-schedule-diagnostic",
         "theater": "toho",
         "date": date,
         "results": [
@@ -654,7 +654,7 @@ def seat_data_debug_aeon():
     ]
 
     return jsonify({
-        "version": "v13-toho-seats",
+        "version": "v14-aeon-schedule-diagnostic",
         "theater": "aeon",
         "date": date_compact,
         "results": [
@@ -814,7 +814,7 @@ def aeon_path_debug():
     bundle_url = _aeon_bundle_url()
     if not bundle_url:
         return jsonify({
-            "version": "v13-toho-seats",
+            "version": "v14-aeon-schedule-diagnostic",
             "error": "幕張新都心のbundle.jsを見つけられませんでした"
         }), 500
 
@@ -855,12 +855,184 @@ def aeon_path_debug():
             break
 
     return jsonify({
-        "version": "v13-toho-seats",
+        "version": "v14-aeon-schedule-diagnostic",
         "bundle_url": bundle_url,
         "bundle_bytes": len(r.content),
         "excerpts": excerpts,
         "schedule_literals": literals,
     })
+
+
+
+def _aeon_schedule_url():
+    now = datetime.now(ZoneInfo("Asia/Tokyo"))
+    stamp = now.strftime("%Y%m%d%H%M")
+    return (
+        "https://theater.aeoncinema.com/"
+        f"schedule/v2/data/makuhari/schedule.json?v={stamp}"
+    )
+
+def _aeon_collect_schedule_hits(data):
+    """
+    schedule.json の構造を壊さず、上映回らしいdictだけを拾う。
+    公式JSで利用されている主な項目:
+      startDate / endDate
+      maximumAttendeeCapacity
+      remainingAttendeeCapacity
+      offers
+      memberOffers
+      superEvent
+      location
+    """
+    hits = []
+
+    def walk(obj, path="$", depth=0):
+        if depth > 14 or len(hits) >= 250:
+            return
+
+        if isinstance(obj, dict):
+            keys = set(obj.keys())
+            looks_like_showing = (
+                ("startDate" in keys or "endDate" in keys)
+                and (
+                    "remainingAttendeeCapacity" in keys
+                    or "maximumAttendeeCapacity" in keys
+                    or "offers" in keys
+                )
+            )
+
+            if looks_like_showing:
+                additional = obj.get("additionalProperty")
+                remaining_seats = None
+                if isinstance(additional, list):
+                    for p in additional:
+                        if isinstance(p, dict) and p.get("name") == "remainingseats":
+                            remaining_seats = p.get("value")
+                            break
+
+                super_event = obj.get("superEvent") or {}
+                location = obj.get("location") or {}
+                offers = obj.get("offers") or {}
+
+                movie_name = None
+                if isinstance(super_event, dict):
+                    nm = super_event.get("name")
+                    if isinstance(nm, dict):
+                        movie_name = nm.get("ja") or nm.get("en")
+                    elif nm:
+                        movie_name = str(nm)
+
+                screen_name = None
+                if isinstance(location, dict):
+                    nm = location.get("name")
+                    if isinstance(nm, dict):
+                        screen_name = nm.get("ja") or nm.get("en")
+                    elif nm:
+                        screen_name = str(nm)
+
+                hits.append({
+                    "path": path,
+                    "id": obj.get("id"),
+                    "movie": movie_name,
+                    "startDate": obj.get("startDate"),
+                    "endDate": obj.get("endDate"),
+                    "screen": screen_name,
+                    "branchCode": location.get("branchCode")
+                        if isinstance(location, dict) else None,
+                    "maximumAttendeeCapacity":
+                        obj.get("maximumAttendeeCapacity"),
+                    "remainingAttendeeCapacity":
+                        obj.get("remainingAttendeeCapacity"),
+                    "remainingseats": remaining_seats,
+                    "availabilityStarts":
+                        offers.get("availabilityStarts")
+                        if isinstance(offers, dict) else None,
+                    "availabilityEnds":
+                        offers.get("availabilityEnds")
+                        if isinstance(offers, dict) else None,
+                    "validFrom":
+                        offers.get("validFrom")
+                        if isinstance(offers, dict) else None,
+                    "validThrough":
+                        offers.get("validThrough")
+                        if isinstance(offers, dict) else None,
+                })
+
+            for k, v in obj.items():
+                walk(v, f"{path}.{k}", depth + 1)
+
+        elif isinstance(obj, list):
+            for i, v in enumerate(obj[:500]):
+                walk(v, f"{path}[{i}]", depth + 1)
+
+    walk(data)
+    return hits
+
+@app.get("/aeon_schedule_debug")
+def aeon_schedule_debug():
+    url = _aeon_schedule_url()
+
+    headers = dict(UA)
+    headers.update({
+        "Referer": "https://theater.aeoncinema.com/theaters/makuhari/",
+        "Accept": "application/json,text/plain,*/*",
+    })
+
+    try:
+        r = requests.get(
+            url,
+            headers=headers,
+            timeout=TIMEOUT,
+            allow_redirects=True,
+        )
+
+        out = {
+            "version": "v14-aeon-schedule-diagnostic",
+            "requested_url": url,
+            "final_url": r.url,
+            "status_code": r.status_code,
+            "content_type": r.headers.get("content-type"),
+            "bytes": len(r.content),
+        }
+
+        if r.status_code != 200:
+            out["text_prefix"] = r.text[:1200]
+            return jsonify(out)
+
+        data = r.json()
+        hits = _aeon_collect_schedule_hits(data)
+
+        # 日付別の件数も確認しやすくする
+        dates = {}
+        for x in hits:
+            s = x.get("startDate")
+            if s:
+                day = str(s)[:10]
+                dates[day] = dates.get(day, 0) + 1
+
+        out.update({
+            "json_type": type(data).__name__,
+            "showing_count": len(hits),
+            "date_counts": dates,
+            "sample_showings": hits[:40],
+            "capacity_fields_found": sum(
+                1 for x in hits
+                if x.get("maximumAttendeeCapacity") is not None
+                or x.get("remainingAttendeeCapacity") is not None
+            ),
+            "remainingseats_found": sum(
+                1 for x in hits
+                if x.get("remainingseats") is not None
+            ),
+        })
+        return jsonify(out)
+
+    except Exception as e:
+        return jsonify({
+            "version": "v14-aeon-schedule-diagnostic",
+            "requested_url": url,
+            "error": f"{type(e).__name__}: {str(e)[:500]}",
+        }), 500
 
 
 @app.get("/api/schedule")
@@ -875,7 +1047,7 @@ def api_schedule():
         "aeon": [],
         "warnings": [],
         "source": "映画.com",
-        "version": "v13-toho-seats",
+        "version": "v14-aeon-schedule-diagnostic",
     }
 
     for key in ("toho", "aeon"):
@@ -930,7 +1102,7 @@ def home():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "v13-toho-seats", "seat_debug": "/seat_debug", "seat_debug2": "/seat_debug2/toho", "seat_data_debug": "/seat_data_debug/toho"}
+    return {"ok": True, "version": "v14-aeon-schedule-diagnostic", "aeon_schedule_debug": "/aeon_schedule_debug"}
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
