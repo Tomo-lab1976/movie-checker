@@ -1,14 +1,10 @@
-from flask import Flask, jsonify, send_from_directory
-import requests
-from bs4 import BeautifulSoup
-import re
+from flask import Flask, request, jsonify, send_from_directory
+from bs4 import BeautifulSoup, Tag
+import requests, re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 app = Flask(__name__, static_folder="static")
-
-THEATERS = {
-    "toho": "https://eiga.com/theater/12/120106/3153/",
-    "aeon": "https://eiga.com/theater/12/120102/3257/",
-}
 
 UA = {
     "User-Agent": (
@@ -17,59 +13,206 @@ UA = {
         "Chrome/124.0 Safari/537.36"
     )
 }
+TIMEOUT = 20
+
+THEATERS = {
+    "toho": {
+        "name": "TOHOシネマズ 八千代緑が丘",
+        "url": "https://eiga.com/theater/12/120106/3153/",
+    },
+    "aeon": {
+        "name": "イオンシネマ幕張新都心",
+        "url": "https://eiga.com/theater/12/120102/3257/",
+    },
+}
+
+IGNORE_H2 = {
+    "上映スケジュール",
+    "映画館情報・割引情報",
+    "近くの映画館",
+    "近くのエリア",
+    "都道府県別",
+    "劇場情報",
+    "アクセス・地図",
+}
+
+def fetch(url):
+    r = requests.get(url, headers=UA, timeout=TIMEOUT)
+    r.raise_for_status()
+    r.encoding = r.apparent_encoding or "utf-8"
+    return r.text
 
 def norm(s):
     return re.sub(r"\s+", " ", s or "").strip()
 
-def diagnose(key):
-    url = THEATERS[key]
-    r = requests.get(url, headers=UA, timeout=20, allow_redirects=True)
-    r.raise_for_status()
-    r.encoding = r.apparent_encoding or "utf-8"
+def looks_like_movie_title(title):
+    if not title or title in IGNORE_H2:
+        return False
+    if len(title) > 100:
+        return False
+    bad_words = ("上映スケジュール", "映画館情報", "割引情報", "近くの映画館",
+                 "都道府県別", "アクセス", "地図", "劇場情報")
+    return not any(x in title for x in bad_words)
 
-    html = r.text
+def movie_sections(html):
+    """
+    作品の h2 から次の h2 直前までを作品ブロックとして読む。
+    /movie/ リンクの有無は条件にしない。
+    """
     soup = BeautifulSoup(html, "html.parser")
-    text = norm(soup.get_text(" ", strip=True))
 
-    needles = [
-        "8/8",
-        "上映スケジュール",
-        "作品情報を見る",
-        "ブルーロック",
-        "キングダム",
-        "__NEXT_DATA__",
-        "__NUXT__",
-        "captcha",
-        "Access Denied",
-    ]
+    for bad in soup(["script", "style", "noscript"]):
+        bad.decompose()
 
-    return {
-        "version": "v5-diagnostic",
-        "requested_url": url,
-        "final_url": r.url,
-        "status_code": r.status_code,
-        "html_bytes": len(html.encode("utf-8", errors="ignore")),
-        "page_title": norm(soup.title.get_text(" ", strip=True)) if soup.title else None,
-        "tag_counts": {
-            "h1": len(soup.find_all("h1")),
-            "h2": len(soup.find_all("h2")),
-            "h3": len(soup.find_all("h3")),
-            "script": len(soup.find_all("script")),
-            "a": len(soup.find_all("a")),
-        },
-        "contains": {
-            n: {
-                "html": n.lower() in html.lower(),
-                "text": n.lower() in text.lower(),
-                "count_html": html.lower().count(n.lower()),
-            }
-            for n in needles
-        },
-        "h1": [norm(x.get_text(" ", strip=True)) for x in soup.find_all("h1")[:10]],
-        "h2": [norm(x.get_text(" ", strip=True)) for x in soup.find_all("h2")[:20]],
-        "h3": [norm(x.get_text(" ", strip=True)) for x in soup.find_all("h3")[:20]],
-        "text_prefix": text[:2000],
+    h2s = soup.find_all("h2")
+    sections = []
+
+    for h2 in h2s:
+        title = norm(h2.get_text(" ", strip=True))
+        if not looks_like_movie_title(title):
+            continue
+
+        # h2の後ろにある要素を、次のh2まで連結
+        parts = []
+        for el in h2.find_all_next():
+            if el is h2:
+                continue
+            if isinstance(el, Tag) and el.name == "h2":
+                break
+
+            # 重複を減らすため、主に小さめのブロックのみ拾う
+            if isinstance(el, Tag) and el.name in (
+                "div", "p", "li", "span", "time", "strong", "em"
+            ):
+                txt = norm(el.get_text(" ", strip=True))
+                if txt:
+                    parts.append(txt)
+
+        text = " ".join(parts)
+
+        # 上映日が存在するものだけ作品として採用
+        if re.search(r"\d{1,2}/\d{1,2}[（(][月火水木金土日][）)]", text):
+            sections.append((title, text))
+
+    # 同名タイトルの重複除去
+    seen = set()
+    out = []
+    for title, text in sections:
+        if title not in seen:
+            seen.add(title)
+            out.append((title, text))
+    return out
+
+def extract_date_block(text, date):
+    dt = datetime.strptime(date, "%Y-%m-%d")
+    md = f"{dt.month}/{dt.day}"
+
+    # 対象日から次の日付まで
+    pat = re.compile(
+        rf"{re.escape(md)}[（(][月火水木金土日][）)]\s*(.*?)"
+        rf"(?="
+        rf"\s*\|?\s*\d{{1,2}}/\d{{1,2}}[（(][月火水木金土日][）)]"
+        rf"|$)"
+    )
+    m = pat.search(text)
+    return m.group(1) if m else ""
+
+def extract_start_times(block):
+    if not block:
+        return []
+
+    # 「20:40～23:00」の終了時刻を除去し、開始時刻だけ残す
+    cleaned = re.sub(
+        r"([0-2]?\d:\d{2})\s*[～〜~-]\s*([0-2]?\d:\d{2})",
+        r"\1",
+        block
+    )
+
+    times = re.findall(r"(?<!\d)([0-2]?\d:\d{2})(?!\d)", cleaned)
+    out = []
+
+    for t in times:
+        h, m = map(int, t.split(":"))
+        if 0 <= h <= 29 and 0 <= m <= 59:
+            value = f"{h:02d}:{m:02d}"
+            if value not in out:
+                out.append(value)
+    return out
+
+def scrape_theater(key, date):
+    html = fetch(THEATERS[key]["url"])
+    result = []
+
+    for title, text in movie_sections(html):
+        block = extract_date_block(text, date)
+        for start in extract_start_times(block):
+            result.append({
+                "title": title,
+                "start": start,
+                "end": None,
+                "status": None,
+            })
+
+    # 重複除去
+    seen = set()
+    out = []
+    for x in result:
+        k = (x["title"], x["start"])
+        if k not in seen:
+            seen.add(k)
+            out.append(x)
+
+    return sorted(out, key=lambda x: (x["start"], x["title"]))
+
+@app.get("/api/schedule")
+def api_schedule():
+    date = request.args.get("date") or datetime.now(
+        ZoneInfo("Asia/Tokyo")
+    ).strftime("%Y-%m-%d")
+
+    result = {
+        "date": date,
+        "toho": [],
+        "aeon": [],
+        "warnings": [],
+        "source": "映画.com",
     }
+
+    for key in ("toho", "aeon"):
+        try:
+            result[key] = scrape_theater(key, date)
+            if not result[key]:
+                result["warnings"].append(
+                    f"{key}: この日の上映情報を解析できませんでした"
+                )
+        except Exception as e:
+            result["warnings"].append(
+                f"{key}: {type(e).__name__}: {str(e)[:160]}"
+            )
+
+    result["updated_at"] = datetime.now(
+        ZoneInfo("Asia/Tokyo")
+    ).strftime("%H:%M")
+
+    return jsonify(result)
+
+@app.get("/debug")
+def debug():
+    out = {}
+    for key in ("toho", "aeon"):
+        try:
+            html = fetch(THEATERS[key]["url"])
+            secs = movie_sections(html)
+            out[key] = {
+                "sections": len(secs),
+                "sample_titles": [x[0] for x in secs[:8]],
+                "html_bytes": len(html.encode("utf-8")),
+            }
+        except Exception as e:
+            out[key] = {
+                "error": f"{type(e).__name__}: {e}"
+            }
+    return jsonify(out)
 
 @app.get("/")
 def home():
@@ -77,24 +220,7 @@ def home():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "v5-diagnostic"}
-
-@app.get("/debug_raw/toho")
-def debug_toho():
-    return jsonify(diagnose("toho"))
-
-@app.get("/debug_raw/aeon")
-def debug_aeon():
-    return jsonify(diagnose("aeon"))
-
-@app.get("/api/schedule")
-def api_schedule():
-    return jsonify({
-        "toho": [],
-        "aeon": [],
-        "warnings": ["v5診断版です。/debug_raw/toho を確認してください。"],
-        "version": "v5-diagnostic"
-    })
+    return {"ok": True}
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
